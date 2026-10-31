@@ -43,6 +43,8 @@ import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.t
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ServerConfig from "../config.ts";
+import * as Path from "effect/Path";
 import { synchronizeCodexHistory } from "./CodexHistory.ts";
 import { synchronizeCodexMembership, moveCodexMembership } from "./CodexProjectMembership.ts";
 
@@ -284,7 +286,7 @@ const make = Effect.gen(function* () {
                 thread.source === "claudeAgent"
                   ? { threadId, resume: thread.providerSessionId }
                   : { threadId: nativeThreadId },
-              runtimePayload: { cwd: project.workspaceRoot },
+              runtimePayload: { cwd: thread.originalWorkspaceRoot ?? project.workspaceRoot },
             },
             { onConflict: "ignore" },
           );
@@ -451,7 +453,7 @@ const make = Effect.gen(function* () {
             runtimeMode: DEFAULT_RUNTIME_MODE,
             interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
             branch: null,
-            worktreePath: null,
+            worktreePath: thread.originalWorkspaceRoot ?? null,
             linkedPullRequest: null,
             branchPullRequest: null,
             activeProviderThreadId: providerThreadId,
@@ -612,7 +614,6 @@ const make = Effect.gen(function* () {
     for (const instanceId of instances) {
       const history = yield* synchronizeCodexHistory(instanceId, (native, messages) =>
         Effect.gen(function* () {
-          if (messages.length === 0) return;
           const threadId = ThreadId.make(`import:${instanceId}:${native.id}`);
           const existing = yield* Effect.option(orchestrator.getThreadRecords(threadId, []));
           let projectId = Option.isSome(existing) ? existing.value.thread.projectId : undefined;
@@ -620,12 +621,28 @@ const make = Effect.gen(function* () {
             const key = NodeCrypto.createHash("sha256")
               .update(normalizeProjectPathForComparison(native.cwd))
               .digest("hex");
-            const created = yield* projects.bootstrap({
-              commandId: CommandId.make(`agent-history-project:${key}`),
-              projectId: ProjectId.make(`agent-history:${key}`),
-              title: native.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? "Codex",
-              workspaceRoot: native.cwd,
-            });
+            const created = yield* projects
+              .bootstrap({
+                commandId: CommandId.make(`agent-history-project:${key}`),
+                projectId: ProjectId.make(`agent-history:${key}`),
+                title: native.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? "Codex",
+                workspaceRoot: native.cwd,
+              })
+              .pipe(
+                Effect.catch(() =>
+                  Effect.gen(function* () {
+                    const config = yield* ServerConfig.ServerConfig;
+                    const path = yield* Path.Path;
+                    return yield* projects.bootstrap({
+                      commandId: CommandId.make("codex-orphan-history-project"),
+                      projectId: ProjectId.make("codex-orphan-history"),
+                      title: "Codex history",
+                      workspaceRoot: path.join(config.baseDir, "projects", "codex-history"),
+                      createWorkspaceRootIfMissing: true,
+                    });
+                  }),
+                ),
+              );
             projectId = created.project.id;
           }
           const result = yield* importRecentAgentThreads({ projectId, fullHistory: true }, false, [
@@ -645,6 +662,7 @@ const make = Effect.gen(function* () {
               },
               thread: {
                 source: "codex",
+                originalWorkspaceRoot: native.cwd,
                 providerInstanceId: instanceId,
                 providerSessionId: native.id,
                 title: native.name ?? (native.preview.slice(0, 120) || "Codex chat"),

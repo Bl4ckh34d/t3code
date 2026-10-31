@@ -149,6 +149,7 @@ export interface AgentSessionThreadMessage {
 }
 
 export interface AgentSessionThread {
+  readonly originalWorkspaceRoot?: string;
   readonly source: AgentSessionSource;
   readonly providerInstanceId: ProviderInstanceId;
   readonly providerSessionId: string;

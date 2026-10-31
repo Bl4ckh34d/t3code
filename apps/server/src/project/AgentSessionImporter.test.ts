@@ -174,7 +174,11 @@ it.effect("restores source order when expanding a legacy capped import", () =>
 
 it.effect("appends source messages on reimport without duplicating existing history", () =>
   Effect.gen(function* () {
-    const source = candidate(CODEX_MODEL_SELECTION, "incremental");
+    const original = candidate(CODEX_MODEL_SELECTION, "incremental");
+    const source = {
+      ...original,
+      thread: { ...original.thread, originalWorkspaceRoot: "/missing/original-workspace" },
+    };
     const first = yield* makeImporter([source]);
     yield* first.run;
     const updated = {
@@ -193,6 +197,7 @@ it.effect("appends source messages on reimport without duplicating existing hist
     yield* second.run;
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const records = yield* projections.getThreadRecords(importId(source), ["messages"]);
+    expect(records.thread.worktreePath).toBe("/missing/original-workspace");
     expect(records.messages.map((message) => message.text)).toEqual([
       "Fix it",
       "Fixed",

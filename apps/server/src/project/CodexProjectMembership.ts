@@ -20,6 +20,7 @@ import * as CodexClient from "effect-codex-app-server/client";
 import { withCodexAppServerClient } from "../provider/CodexProvider.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ServerConfig from "../config.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 
@@ -48,6 +49,8 @@ const ThreadPage = Schema.Struct({
   nextCursor: Schema.optional(Schema.NullOr(Schema.String)),
 });
 const decodeThreadPage = Schema.decodeUnknownEffect(ThreadPage);
+// Codex defaults to interactive sources, which omits historical exec chats.
+export const CODEX_SYNC_THREAD_SOURCES = ["cli", "vscode", "exec", "appServer", "unknown"] as const;
 export type RawClient = CodexClient.CodexAppServerClient["Service"]["raw"];
 export const request = (raw: Pick<RawClient, "request">, method: string, params: unknown) =>
   raw.request(method, params).pipe(Effect.timeout("30 seconds"));
@@ -216,12 +219,28 @@ export const synchronizeCodexMembership = Effect.fn("synchronizeCodexMembership"
       let local = linkedId ? yield* projects.getById(ProjectId.make(linkedId)) : Option.none();
       const root = native.roots[0];
       if (Option.isNone(local) && root) {
-        const created = yield* projects.bootstrap({
-          commandId: CommandId.make(`codex-project:${instanceId}:${native.id}`),
-          projectId: ProjectId.make(`codex-project:${instanceId}:${native.id}`),
-          title: native.name,
-          workspaceRoot: root.path,
-        });
+        const created = yield* projects
+          .bootstrap({
+            commandId: CommandId.make(`codex-project:${instanceId}:${native.id}`),
+            projectId: ProjectId.make(`codex-project:${instanceId}:${native.id}`),
+            title: native.name,
+            workspaceRoot: root.path,
+          })
+          .pipe(
+            Effect.catch(() =>
+              Effect.gen(function* () {
+                const config = yield* ServerConfig.ServerConfig;
+                const path = yield* Path.Path;
+                return yield* projects.bootstrap({
+                  commandId: CommandId.make(`codex-archived-project:${instanceId}:${native.id}`),
+                  projectId: ProjectId.make(`codex-archived-project:${instanceId}:${native.id}`),
+                  title: native.name,
+                  workspaceRoot: path.join(config.baseDir, "projects", `codex-${native.id}`),
+                  createWorkspaceRootIfMissing: true,
+                });
+              }),
+            ),
+          );
         local = Option.some(created.project);
       }
       if (Option.isSome(local)) {
@@ -275,6 +294,7 @@ export const synchronizeCodexMembership = Effect.fn("synchronizeCodexMembership"
         yield* request(client.raw, "thread/list", {
           limit: 100,
           archived,
+          sourceKinds: CODEX_SYNC_THREAD_SOURCES,
           ...(cursor ? { cursor } : {}),
         }),
       );

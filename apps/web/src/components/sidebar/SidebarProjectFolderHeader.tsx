@@ -42,7 +42,8 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
   canDropThread?: boolean;
   onDragProjectStart?: React.DragEventHandler<HTMLButtonElement>;
   onDragProjectEnd?: React.DragEventHandler<HTMLButtonElement>;
-  onDropThread?: (group: SidebarProjectSnapshot) => void;
+  projectDragActive?: boolean;
+  onDropThread?: (group: SidebarProjectSnapshot, placement?: "before" | "after") => void;
   group: SidebarProjectSnapshot;
   collapsed: boolean;
   hiddenThreads: readonly EnvironmentThreadShell[];
@@ -52,6 +53,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
 }) {
   const { group, collapsed, hiddenThreads } = props;
   const [dragOver, setDragOver] = useState(false);
+  const [dropPlacement, setDropPlacement] = useState<"before" | "after">("before");
   const rowId = sidebarFolderRowId(group);
   const localLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
   const dot = collapsed
@@ -72,24 +74,48 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
       data-testid="sidebar-project-folder"
       className={cn(
         "group/project-folder relative mt-2 list-none first:mt-0",
-        dragOver && props.canDropThread && "rounded-md ring-2 ring-primary",
+        dragOver &&
+          props.canDropThread &&
+          !props.projectDragActive &&
+          "rounded-md ring-2 ring-primary",
       )}
       onDragOver={(event) => {
         if (props.canDropThread) {
           event.preventDefault();
           event.dataTransfer.dropEffect = "move";
           setDragOver(true);
+          if (props.projectDragActive) {
+            const bounds = event.currentTarget.getBoundingClientRect();
+            setDropPlacement(event.clientY < bounds.top + bounds.height / 2 ? "before" : "after");
+          }
         }
       }}
-      onDragLeave={() => setDragOver(false)}
+      onDragLeave={(event) => {
+        if (
+          event.relatedTarget instanceof Node &&
+          event.currentTarget.contains(event.relatedTarget)
+        )
+          return;
+        setDragOver(false);
+      }}
       onDrop={(event) => {
         setDragOver(false);
         if (props.canDropThread) {
           event.preventDefault();
-          props.onDropThread?.(group);
+          props.onDropThread?.(group, props.projectDragActive ? dropPlacement : undefined);
         }
       }}
     >
+      {dragOver && props.canDropThread && props.projectDragActive ? (
+        <span
+          aria-hidden
+          data-testid="project-folder-insertion-line"
+          className={cn(
+            "pointer-events-none absolute inset-x-0 z-10 border-t-2 border-primary",
+            dropPlacement === "before" ? "top-0" : "bottom-0",
+          )}
+        />
+      ) : null}
       <button
         type="button"
         draggable={props.onDragProjectStart !== undefined}

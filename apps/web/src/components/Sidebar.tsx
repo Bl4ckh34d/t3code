@@ -995,7 +995,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       getId: sidebarFolderRowId,
     });
   const [projectDragThread, setProjectDragThread] = useState<ScopedThreadRef | null>(null);
-  const dropProjectThread = (group: SidebarProjectSnapshot) => {
+  const dropProjectThread = (
+    group: SidebarProjectSnapshot,
+    placement: "before" | "after" = "before",
+  ) => {
     if (dragProjectFolder !== null) {
       const source = dragProjectFolder;
       setDragProjectFolder(null);
@@ -1005,7 +1008,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       const from = ids.indexOf(sidebarFolderRowId(source));
       if (from < 0) return;
       ids.splice(from, 1);
-      ids.splice(ids.indexOf(sidebarFolderRowId(group)), 0, sidebarFolderRowId(source));
+      ids.splice(
+        ids.indexOf(sidebarFolderRowId(group)) + (placement === "after" ? 1 : 0),
+        0,
+        sidebarFolderRowId(source),
+      );
       setProjectFolderOrder(ids);
       return;
     }
@@ -3552,6 +3559,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               items.push(
                                 <SidebarProjectFolderHeader
                                   key={sidebarFolderRowId(folder.group)}
+                                  projectDragActive={dragProjectFolder !== null}
                                   onDragProjectStart={(event) => {
                                     event.stopPropagation();
                                     event.dataTransfer.effectAllowed = "move";

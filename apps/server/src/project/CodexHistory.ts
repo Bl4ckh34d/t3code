@@ -2,7 +2,12 @@ import { ProviderInstanceId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { connect, request, type RawClient } from "./CodexProjectMembership.ts";
+import {
+  connect,
+  request,
+  CODEX_SYNC_THREAD_SOURCES,
+  type RawClient,
+} from "./CodexProjectMembership.ts";
 import type { AgentSessionThreadMessage } from "./AgentSessionScanner.ts";
 
 const NativeThread = Schema.Struct({
@@ -108,6 +113,7 @@ export const synchronizeCodexHistory = Effect.fn("synchronizeCodexHistory")(func
       const page = yield* decodeThreadPage(
         yield* request(client.raw, "thread/list", {
           archived,
+          sourceKinds: CODEX_SYNC_THREAD_SOURCES,
           limit: 100,
           ...(cursor ? { cursor } : {}),
         }),

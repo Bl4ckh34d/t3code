@@ -332,7 +332,7 @@ an approval or answer from you, when a run fails, or when you send it a message.
 
 # Synchronizing Codex history
 
-Use **Sync agent history** in the sidebar to import conversation text and reconcile Codex project membership on the primary connection. Synchronization is manual. Other machines need an updated T3 server and their own synchronization.
+Use **Sync agent history** in the sidebar to import conversation text and reconcile Codex project membership on connected machines. Synchronization is manual. Each machine needs an updated T3 server. Offline machines must reconnect before their history can synchronize.
 
 Drag a chat onto another project folder on the same connection to move its organization. Its execution directory, branch, and worktree remain attached to the original workspace.
 
