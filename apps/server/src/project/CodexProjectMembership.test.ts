@@ -3,7 +3,8 @@ import * as Effect from "effect/Effect";
 import {
   pendingCodexMembership,
   readCodexProjects,
-  reconcileName,
+  incomingCodexTitle,
+  codexDesktopSidebar,
 } from "./CodexProjectMembership.ts";
 
 it.effect("reads all project pages and rejects a repeated cursor", () =>
@@ -57,10 +58,35 @@ it("uses only pending desktop assignments from the matching Codex home", () => {
   expect(pendingCodexMembership(state, "/home/codex").size).toBe(0);
 });
 
-it("reconciles one-sided renames and preserves conflicting names", () => {
-  expect(reconcileName("Old", "Codex", "Old")).toEqual({ title: "Codex", conflict: false });
-  expect(reconcileName("T3", "Old", "Old")).toEqual({ title: "T3", conflict: false });
-  expect(reconcileName("T3", "Codex", "Old").conflict).toBe(true);
-  expect(reconcileName("Same", "Same", "Old").conflict).toBe(false);
-  expect(reconcileName("Initial", "Codex").title).toBe("Codex");
+it("always takes Codex names and retains a title only when Codex has none", () => {
+  expect(incomingCodexTitle("T3 rename", "Codex rename")).toBe("Codex rename");
+  expect(incomingCodexTitle("T3 rename", "Old")).toBe("Old");
+  expect(incomingCodexTitle("Existing", null)).toBe("Existing");
+  expect(incomingCodexTitle("Existing", "  ")).toBe("Existing");
+});
+
+it("reads desktop project names and orders only for the matching local home", () => {
+  const state = {
+    "app-server-project-id-by-legacy-project-id-by-host": {
+      "local:/home/codex": { a: "native-a", b: "native-b" },
+    },
+    "local-projects": {
+      a: { name: "Renamed in desktop", rootPaths: ["/repo/a"] },
+      b: { name: "Second", rootPaths: ["/repo/b"] },
+    },
+    "project-order": ["remote", "b", "a", "b"],
+    "sidebar-project-thread-orders": {
+      a: { threadIds: ["chat2", "chat1"], sortKey: "updated_at" },
+      b: { threadIds: ["chat3"] },
+    },
+  };
+  const sidebar = codexDesktopSidebar(state, "/home/codex");
+  expect(sidebar.projectIds).toEqual(["native-b", "native-a"]);
+  expect(sidebar.threadIds).toEqual(["chat3", "chat2", "chat1"]);
+  expect(sidebar.projects.get("native-a")).toEqual({
+    name: "Renamed in desktop",
+    rootPaths: ["/repo/a"],
+  });
+  expect(codexDesktopSidebar(state, "/other/home").projectIds).toEqual([]);
+  expect(codexDesktopSidebar({}, "/home/codex").projects.size).toBe(0);
 });

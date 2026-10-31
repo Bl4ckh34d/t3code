@@ -43,10 +43,12 @@ import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.t
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import * as ServerConfig from "../config.ts";
-import * as Path from "effect/Path";
 import { synchronizeCodexHistory } from "./CodexHistory.ts";
-import { synchronizeCodexMembership, moveCodexMembership } from "./CodexProjectMembership.ts";
+import {
+  synchronizeCodexMembership,
+  moveCodexMembership,
+  unassignedCodexProject,
+} from "./CodexProjectMembership.ts";
 
 const IMPORT_EVENT_PREFIX = "agent-session-import:v2";
 const CLAUDE_SESSION_ID_PATTERN =
@@ -591,6 +593,7 @@ const make = Effect.gen(function* () {
       skippedCount += result.skippedCount;
     }
     let membershipErrorCount = 0;
+    const sidebarOrder = { projectIds: [] as ProjectId[], threadIds: [] as ThreadId[] };
     const instances = new Set(
       (yield* runtimes
         .list()
@@ -618,32 +621,7 @@ const make = Effect.gen(function* () {
           const existing = yield* Effect.option(orchestrator.getThreadRecords(threadId, []));
           let projectId = Option.isSome(existing) ? existing.value.thread.projectId : undefined;
           if (projectId === undefined) {
-            const key = NodeCrypto.createHash("sha256")
-              .update(normalizeProjectPathForComparison(native.cwd))
-              .digest("hex");
-            const created = yield* projects
-              .bootstrap({
-                commandId: CommandId.make(`agent-history-project:${key}`),
-                projectId: ProjectId.make(`agent-history:${key}`),
-                title: native.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? "Codex",
-                workspaceRoot: native.cwd,
-              })
-              .pipe(
-                Effect.catch(() =>
-                  Effect.gen(function* () {
-                    const config = yield* ServerConfig.ServerConfig;
-                    const path = yield* Path.Path;
-                    return yield* projects.bootstrap({
-                      commandId: CommandId.make("codex-orphan-history-project"),
-                      projectId: ProjectId.make("codex-orphan-history"),
-                      title: "Codex history",
-                      workspaceRoot: path.join(config.baseDir, "projects", "codex-history"),
-                      createWorkspaceRootIfMissing: true,
-                    });
-                  }),
-                ),
-              );
-            projectId = created.project.id;
+            projectId = (yield* unassignedCodexProject()).id;
           }
           const result = yield* importRecentAgentThreads({ projectId, fullHistory: true }, false, [
             {
@@ -683,6 +661,12 @@ const make = Effect.gen(function* () {
       skippedCount += history;
       yield* synchronizeCodexMembership(instanceId).pipe(
         Effect.scoped,
+        Effect.tap((result) =>
+          Effect.sync(() => {
+            sidebarOrder.projectIds.push(...result.projectIds);
+            sidebarOrder.threadIds.push(...result.threadIds);
+          }),
+        ),
         Effect.catch((cause) =>
           Effect.logWarning("Codex project membership sync failed", { cause }).pipe(
             Effect.tap(
@@ -695,6 +679,10 @@ const make = Effect.gen(function* () {
       );
     }
     return {
+      sidebarOrder: {
+        projectIds: [...new Set(sidebarOrder.projectIds)],
+        threadIds: [...new Set(sidebarOrder.threadIds)],
+      },
       membershipErrorCount,
       importedCount,
       skippedCount,

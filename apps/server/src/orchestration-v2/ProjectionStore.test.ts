@@ -1452,6 +1452,11 @@ it.effect("SQL list older settled threads below a cursor", () =>
     yield* createThread({ name: "b", settledDay: 4 });
     yield* createThread({ name: "c", settledDay: 4 });
     yield* createThread({ name: "d", settledDay: 3, organizationProject: "project:b" });
+    const movedShell = (yield* store.getShellSnapshot({ location: "active" })).threads.find(
+      (thread) => thread.id === id("d"),
+    );
+    assert.equal(movedShell?.organizationProjectId, "project:b");
+    assert.equal(movedShell?.projectId, "project:a");
     yield* createThread({ name: "snoozed", settledDay: 2, snoozedUntilDay: 30 });
     yield* createThread({ name: "recent", settledDay: 20 });
     yield* createThread({ name: "unsettled", settledDay: null });

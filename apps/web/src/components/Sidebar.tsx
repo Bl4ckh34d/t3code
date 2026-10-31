@@ -1,5 +1,5 @@
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
-import { type EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
+import { EnvironmentId, type ScopedProjectRef } from "@t3tools/contracts";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import {
@@ -135,6 +135,7 @@ import { startNewThreadFromContext } from "../lib/chatThreadActions";
 import { useBoringSidebarEnabled, useClientSettings } from "../hooks/useSettings";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useLocalStorage } from "../hooks/useLocalStorage";
+import { useCodexSidebarOrders } from "./sidebar/codexSidebarOrder";
 import { useNowMinute } from "../hooks/useNowMinute";
 import {
   useEnvironmentIdentities,
@@ -438,6 +439,12 @@ function useSidebarThreads(input: {
     folderGroups,
     keepEmptyFolders: keepEmpty,
   } = input;
+  const [codexOrders] = useCodexSidebarOrders();
+  const codexThreadOrder = Object.entries(codexOrders).flatMap(([environmentId, order]) =>
+    order.threadIds.map((id) =>
+      scopedThreadKey(scopeThreadRef(EnvironmentId.make(environmentId), id)),
+    ),
+  );
   // Folders already separate the work, so boring mode has no Working shelf.
   const workingShelfEnabled =
     useClientSettings((s) => s.sidebarWorkingShelfEnabled) && folderGroups === null;
@@ -539,6 +546,11 @@ function useSidebarThreads(input: {
           [...pinnedThreads, ...activeThreads, ...snoozedThreads, ...visibleSettledThreads],
           keepEmpty,
         ).map((folder) => {
+          const orderedThreads = orderItemsByPreferredIds({
+            items: folder.threads,
+            preferredIds: codexThreadOrder,
+            getId: threadShellKey,
+          });
           const collapsed = !resolveProjectExpanded(
             projectExpandedById,
             folderExpansionKeys(folder.group),
@@ -548,8 +560,8 @@ function useSidebarThreads(input: {
             collapsed,
             // A closed folder still shows the open thread, and hints at the rest.
             threads: collapsed
-              ? routeThreadOnly(folder.threads, routeRowThreadKey)
-              : folder.threads,
+              ? routeThreadOnly(orderedThreads, routeRowThreadKey)
+              : orderedThreads,
             hiddenThreads: collapsed
               ? folder.threads.filter((thread) => threadShellKey(thread) !== routeRowThreadKey)
               : EMPTY_THREADS,
@@ -987,12 +999,22 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     readonly string[],
     readonly string[]
   >("t3.sidebar.project-folder-order.v1", [], projectFolderOrderSchema);
+  const [codexOrders] = useCodexSidebarOrders();
   const [dragProjectFolder, setDragProjectFolder] = useState<SidebarProjectSnapshot | null>(null);
   const orderProjectFolders = (groups: readonly SidebarProjectSnapshot[]) =>
     orderItemsByPreferredIds({
       items: groups,
-      preferredIds: projectFolderOrder,
+      preferredIds: [
+        ...projectFolderOrder,
+        ...Object.entries(codexOrders).flatMap(([environmentId, order]) =>
+          order.projectIds.map((id) => `${environmentId}:${id}`),
+        ),
+      ],
       getId: sidebarFolderRowId,
+      getPreferenceIds: (group) => [
+        sidebarFolderRowId(group),
+        ...group.memberProjectRefs.map((ref) => `${ref.environmentId}:${ref.projectId}`),
+      ],
     });
   const [projectDragThread, setProjectDragThread] = useState<ScopedThreadRef | null>(null);
   const dropProjectThread = (
@@ -1424,7 +1446,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     threads,
     delegatedUnderParent,
     routeRowThreadKey,
-    manualProjectOrder: projectFolderOrder.length > 0,
+    manualProjectOrder: projectFolderOrder.length > 0 || Object.keys(codexOrders).length > 0,
     folderGroups: boringSidebarEnabled
       ? orderProjectFolders(
           scopedProjectGroups.length === 0

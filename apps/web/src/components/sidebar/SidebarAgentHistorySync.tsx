@@ -9,6 +9,11 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { SidebarMenuButton, SidebarMenuItem } from "../ui/sidebar";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { useCodexSidebarOrders } from "./codexSidebarOrder";
+import { writeLocalStorageValue } from "../../hooks/useLocalStorage";
+import * as Schema from "effect/Schema";
+
+const folderOrderSchema = Schema.Array(Schema.String);
 
 const syncableEnvironmentsAtom = Atom.make((get) =>
   get(environmentSummaries.connectedEnvironmentIdsAtom).filter((id) =>
@@ -23,6 +28,7 @@ export function SidebarAgentHistorySync() {
   const sync = useAtomCommand(agentSessionSync);
   const inFlight = useRef(false);
   const [pending, setPending] = useState(false);
+  const [, setCodexOrders] = useCodexSidebarOrders();
   const run = async () => {
     const targets = registry.get(syncableEnvironmentsAtom);
     if (targets.length === 0 || inFlight.current) return;
@@ -39,12 +45,23 @@ export function SidebarAgentHistorySync() {
       let failedConnections =
         registry.get(environmentSummaries.connectedEnvironmentIdsAtom).length - targets.length;
       let truncated = false;
-      for (const result of results) {
+      for (const [index, result] of results.entries()) {
         if (result.status !== "fulfilled" || result.value._tag !== "Success") {
           failedConnections++;
           continue;
         }
         const value = result.value.value;
+        const environmentId = targets[index]!;
+        if (value.sidebarOrder) {
+          const order = value.sidebarOrder;
+          setCodexOrders((orders) => ({ ...orders, [environmentId]: order }));
+          writeLocalStorageValue(
+            "t3.sidebar.project-folder-order.v1",
+            (ids) => ids.filter((id) => !id.startsWith(`folder:${environmentId}:`)),
+            [],
+            folderOrderSchema,
+          );
+        }
         importedCount += value.importedCount;
         skippedCount += value.skippedCount;
         unlinkedProjectCount += value.unlinkedProjectCount;
@@ -86,8 +103,8 @@ export function SidebarAgentHistorySync() {
           }
         />
         <TooltipPopup side="top">
-          {label}. Import conversation history and reconcile project folders on connected machines.
-          Offline machines must reconnect before syncing.
+          {label}. Copy Codex names, project membership and sidebar order to T3 on connected
+          machines. Offline machines must reconnect before syncing.
         </TooltipPopup>
       </Tooltip>
     </SidebarMenuItem>

@@ -85,7 +85,13 @@ export const AgentSessionImportResult = Schema.Struct({
   skippedCount: NonNegativeInt,
 });
 
+export const AgentSessionSidebarOrder = Schema.Struct({
+  projectIds: Schema.Array(ProjectId),
+  threadIds: Schema.Array(ThreadId),
+});
+
 export const AgentSessionSyncResult = Schema.Struct({
+  sidebarOrder: Schema.optional(AgentSessionSidebarOrder),
   membershipErrorCount: NonNegativeInt,
   importedCount: NonNegativeInt,
   skippedCount: NonNegativeInt,

@@ -1779,6 +1779,8 @@ function shellFromState(input: {
     creationSource: input.state.thread.creationSource,
     id: input.state.thread.id,
     projectId: input.state.thread.projectId,
+    organizationProjectId: input.state.thread.organizationProjectId,
+    codexSyncedTitle: input.state.thread.codexSyncedTitle,
     title: input.state.thread.title,
     providerInstanceId: input.state.thread.providerInstanceId,
     modelSelection: input.state.thread.modelSelection,

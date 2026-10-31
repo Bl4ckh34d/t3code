@@ -1,4 +1,5 @@
 import { expect, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   type AgentSessionSource,
   EventId,
@@ -38,7 +39,8 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as AgentSessionImporter from "./AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
-import { readCodexThreadOwners } from "./CodexProjectMembership.ts";
+import * as ServerConfig from "../config.ts";
+import { readCodexThreadOwners, pullCodexMembership } from "./CodexProjectMembership.ts";
 
 const projectId = ProjectId.make("agent-session-import-project");
 const timestamp = "2026-09-01T10:00:00.000Z";
@@ -90,6 +92,69 @@ function candidate(
 }
 
 const PI_MODEL_SELECTION = { instanceId: ProviderInstanceId.make("pi"), model: "default" };
+
+it.effect("pulls Codex desktop names and order without writing to Codex", () =>
+  Effect.gen(function* () {
+    let project = {
+      id: projectId,
+      title: "T3 rename",
+      workspaceRoot: "/repo",
+      defaultModelSelection: null,
+      scripts: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      deletedAt: null,
+    };
+    const result = yield* pullCodexMembership(
+      CODEX_MODEL_SELECTION.instanceId,
+      {
+        request: (method) =>
+          method === "project/list"
+            ? Effect.succeed({
+                data: [
+                  {
+                    id: "native",
+                    name: "Old",
+                    roots: [{ path: "/repo" }],
+                    metadata: { "t3code.projectId": projectId, "t3code.syncedTitle": "Old" },
+                  },
+                ],
+              })
+            : method === "thread/list"
+              ? Effect.succeed({ data: [] })
+              : Effect.die(`Pull must not call ${method}`),
+      },
+      {
+        "app-server-project-id-by-legacy-project-id-by-host": {
+          "local:/codex": { legacy: "native" },
+        },
+        "local-projects": { legacy: { name: "Codex desktop rename", rootPaths: ["/repo"] } },
+        "project-order": ["legacy"],
+      },
+      "/codex",
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest("/repo", { prefix: "t3-codex-pull-test-" }).pipe(
+            Layer.provideMerge(NodeServices.layer),
+          ),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: () => Effect.succeedSome(project),
+            update: (input) =>
+              Effect.sync(() => {
+                project = { ...project, title: input.title ?? project.title };
+                return project;
+              }),
+          }),
+          Layer.mock(Orchestrator.OrchestratorV2)({}),
+        ),
+      ),
+    );
+    expect(project.title).toBe("Codex desktop rename");
+    expect(result.projectIds).toEqual([projectId]);
+    expect(result.threadIds).toEqual([]);
+  }).pipe(Effect.scoped, Effect.provide(persistence)),
+);
 
 it.effect("restores source order when expanding a legacy capped import", () =>
   Effect.gen(function* () {

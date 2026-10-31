@@ -127,17 +127,71 @@ export function pendingCodexMembership(
   return result;
 }
 
-const readPendingCodexMembership = Effect.fn("readPendingCodexMembership")(function* (
-  homePath: string,
-) {
+const DesktopSidebar = Schema.Struct({
+  "app-server-project-id-by-legacy-project-id-by-host": Schema.Record(
+    Schema.String,
+    Schema.Record(Schema.String, Schema.String),
+  ),
+  "local-projects": Schema.Record(
+    Schema.String,
+    Schema.Struct({
+      name: Schema.String,
+      rootPaths: Schema.Array(Schema.String),
+    }),
+  ),
+  "project-order": Schema.optional(Schema.Array(Schema.String)),
+  "sidebar-project-thread-orders": Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({
+        threadIds: Schema.Array(Schema.String),
+      }),
+    ),
+  ),
+});
+const decodeDesktopSidebar = Schema.decodeUnknownOption(DesktopSidebar);
+
+export function codexDesktopSidebar(state: unknown, homePath: string) {
+  const projects = new Map<
+    string,
+    { readonly name: string; readonly rootPaths: readonly string[] }
+  >();
+  const projectIds: string[] = [];
+  const threadIds: string[] = [];
+  const decoded = decodeDesktopSidebar(state);
+  if (Option.isSome(decoded)) {
+    const data = decoded.value;
+    const host = Object.keys(data["app-server-project-id-by-legacy-project-id-by-host"]).find(
+      (key) =>
+        key.startsWith("local:") &&
+        normalizeProjectPathForComparison(key.slice(6)) ===
+          normalizeProjectPathForComparison(homePath),
+    );
+    const mapping = host
+      ? (data["app-server-project-id-by-legacy-project-id-by-host"][host] ?? {})
+      : {};
+    for (const legacy of [
+      ...(data["project-order"] ?? []),
+      ...Object.keys(data["local-projects"]),
+    ]) {
+      const id = mapping[legacy];
+      const project = data["local-projects"][legacy];
+      if (!id || !project || projects.has(id)) continue;
+      projects.set(id, project);
+      projectIds.push(id);
+      threadIds.push(...(data["sidebar-project-thread-orders"]?.[legacy]?.threadIds ?? []));
+    }
+  }
+  return { projects, projectIds, threadIds: [...new Set(threadIds)] };
+}
+
+const readCodexDesktopState = Effect.fn("readCodexDesktopState")(function* (homePath: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const state = yield* fs
     .readFileString(path.join(homePath, ".codex-global-state.json"))
     .pipe(Effect.flatMap(decodeJson), Effect.option);
-  return Option.isSome(state)
-    ? pendingCodexMembership(state.value, homePath)
-    : new Map<string, string | null>();
+  return Option.getOrNull(state);
 });
 
 export const readCodexThreadOwners = Effect.fn("readCodexThreadOwners")(function* (
@@ -195,25 +249,42 @@ export const connect = Effect.fn("CodexProjectMembership.connect")(function* (
   return { ...connection, homePath: layout.sharedHomePath };
 });
 
-export function reconcileName(local: string, remote: string, baseline?: string) {
-  if (local === remote) return { title: local, conflict: false };
-  if (baseline === undefined || local === baseline) return { title: remote, conflict: false };
-  if (remote === baseline) return { title: local, conflict: false };
-  return { title: local, conflict: true };
+export function incomingCodexTitle(local: string, remote: string | null | undefined) {
+  return remote?.trim() || local;
 }
 
-export const synchronizeCodexMembership = Effect.fn("synchronizeCodexMembership")(function* (
+export const unassignedCodexProject = Effect.fn("unassignedCodexProject")(function* () {
+  const projects = yield* ProjectService.ProjectService;
+  const config = yield* ServerConfig.ServerConfig;
+  const path = yield* Path.Path;
+  return (yield* projects.bootstrap({
+    commandId: CommandId.make("codex-unassigned-history"),
+    projectId: ProjectId.make("codex-unassigned-history"),
+    title: "Unassigned Codex chats",
+    workspaceRoot: path.join(config.baseDir, "projects", "codex-unassigned-history"),
+    createWorkspaceRootIfMissing: true,
+  })).project;
+});
+
+export const pullCodexMembership = Effect.fn("pullCodexMembership")(function* (
   instanceId: ProviderInstanceId,
+  raw: Pick<RawClient, "request">,
+  desktopState: unknown,
+  homePath: string,
 ) {
   const crypto = yield* Crypto.Crypto;
-  const { client, homePath } = yield* connect(instanceId);
-  const pendingMembership = yield* readPendingCodexMembership(homePath);
+  const pendingMembership = pendingCodexMembership(desktopState, homePath);
+  const sidebar = codexDesktopSidebar(desktopState, homePath);
   const projects = yield* ProjectService.ProjectService;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
-  const nativeProjects = yield* readCodexProjects(client.raw);
+  const nativeProjects = yield* readCodexProjects(raw);
   const mapping = new Map<string, ProjectId>();
   let mappingErrors = 0;
-  for (const native of nativeProjects) {
+  for (const entry of nativeProjects) {
+    const desktop = sidebar.projects.get(entry.id);
+    const native = desktop
+      ? { ...entry, name: desktop.name, roots: desktop.rootPaths.map((path) => ({ path })) }
+      : entry;
     yield* Effect.gen(function* () {
       const linkedId = native.metadata?.["t3code.projectId"];
       let local = linkedId ? yield* projects.getById(ProjectId.make(linkedId)) : Option.none();
@@ -245,31 +316,11 @@ export const synchronizeCodexMembership = Effect.fn("synchronizeCodexMembership"
       }
       if (Option.isSome(local)) {
         mapping.set(native.id, local.value.id);
-        const name = reconcileName(
-          local.value.title,
-          native.name,
-          native.metadata?.["t3code.syncedTitle"],
-        );
-        if (name.conflict) {
-          mappingErrors++;
-          return;
-        }
-        if (name.title !== local.value.title)
+        if (native.name !== local.value.title)
           yield* projects.update({
             commandId: CommandId.make(`codex-project-name:${yield* crypto.randomUUIDv4()}`),
             projectId: local.value.id,
-            title: name.title,
-          });
-        if (name.title !== native.name)
-          yield* request(client.raw, "project/update", { projectId: native.id, name: name.title });
-        if (linkedId !== local.value.id || native.metadata?.["t3code.syncedTitle"] !== name.title)
-          yield* request(client.raw, "project/update", {
-            projectId: native.id,
-            metadata: {
-              ...native.metadata,
-              "t3code.projectId": local.value.id,
-              "t3code.syncedTitle": name.title,
-            },
+            title: native.name,
           });
       }
     }).pipe(
@@ -285,61 +336,42 @@ export const synchronizeCodexMembership = Effect.fn("synchronizeCodexMembership"
     );
   }
   const owners = yield* readCodexThreadOwners(instanceId);
+  const listedThreadIds: string[] = [];
   let updated = 0;
   for (const archived of [false, true]) {
     let cursor: string | undefined;
     const seen = new Set<string>();
     do {
       const page = yield* decodeThreadPage(
-        yield* request(client.raw, "thread/list", {
+        yield* request(raw, "thread/list", {
           limit: 100,
           archived,
+          sortKey: "updated_at",
           sourceKinds: CODEX_SYNC_THREAD_SOURCES,
           ...(cursor ? { cursor } : {}),
         }),
       );
       for (const native of page.data) {
+        listedThreadIds.push(native.id);
         let nativeProjectId = native.projectId;
         const pendingProjectId = pendingMembership.get(native.id);
-        if (nativeProjectId === null && pendingProjectId !== undefined) {
-          // Desktop can have migrated its project IDs but not thread membership.
-          // Read that pending migration only; all writes go through Codex's API.
-          yield* request(client.raw, "thread/metadata/update", {
-            threadId: native.id,
-            projectId: pendingProjectId ?? "",
-          });
+        if (pendingProjectId !== undefined) {
           nativeProjectId = pendingProjectId;
         }
-        const target = nativeProjectId === null ? null : mapping.get(nativeProjectId);
+        const target =
+          nativeProjectId === null
+            ? owners.has(native.id)
+              ? (yield* unassignedCodexProject()).id
+              : null
+            : mapping.get(nativeProjectId);
         if (target === undefined) continue;
         for (const threadId of owners.get(native.id) ?? []) {
           const records = yield* Effect.option(orchestrator.getThreadRecords(threadId, []));
           if (Option.isNone(records) || records.value.thread.deletedAt !== null) continue;
-          const nativeName =
-            native.name?.trim() ||
-            records.value.thread.codexSyncedTitle ||
-            records.value.thread.title;
-          const name = nativeName
-            ? reconcileName(
-                records.value.thread.title,
-                nativeName,
-                records.value.thread.codexSyncedTitle,
-              )
-            : null;
-          if (name?.conflict) {
-            mappingErrors++;
-            continue;
-          }
-          if (name && name.title !== nativeName)
-            yield* request(client.raw, "thread/name/set", {
-              threadId: native.id,
-              name: name.title,
-            });
+          const title = incomingCodexTitle(records.value.thread.title, native.name);
           if (
             (records.value.thread.organizationProjectId ?? null) === target &&
-            (!name ||
-              (records.value.thread.title === name.title &&
-                records.value.thread.codexSyncedTitle === name.title))
+            records.value.thread.title === title
           )
             continue;
           yield* orchestrator.dispatch({
@@ -348,7 +380,8 @@ export const synchronizeCodexMembership = Effect.fn("synchronizeCodexMembership"
             threadId,
             organizationProjectId: target,
             expectedTitle: records.value.thread.title,
-            ...(name ? { title: name.title, codexSyncedTitle: name.title } : {}),
+            title,
+            codexSyncedTitle: title,
           });
           updated++;
         }
@@ -363,7 +396,31 @@ export const synchronizeCodexMembership = Effect.fn("synchronizeCodexMembership"
     return yield* new MembershipError({
       message: `${mappingErrors} Codex projects could not be linked.`,
     });
-  return updated;
+  return {
+    updated,
+    projectIds: [
+      ...new Set(
+        [...sidebar.projectIds, ...nativeProjects.map((project) => project.id)].flatMap(
+          (id) => mapping.get(id) ?? [],
+        ),
+      ),
+    ],
+    threadIds: [
+      ...new Set([...sidebar.threadIds, ...listedThreadIds].flatMap((id) => owners.get(id) ?? [])),
+    ],
+  };
+});
+
+export const synchronizeCodexMembership = Effect.fn("synchronizeCodexMembership")(function* (
+  instanceId: ProviderInstanceId,
+) {
+  const { client, homePath } = yield* connect(instanceId);
+  return yield* pullCodexMembership(
+    instanceId,
+    client.raw,
+    yield* readCodexDesktopState(homePath),
+    homePath,
+  );
 });
 
 export const moveCodexMembership = Effect.fn("moveCodexMembership")(function* (
