@@ -273,6 +273,8 @@ import {
   SidebarSectionPlaceholder,
 } from "./sidebar/SidebarListMarkers";
 
+const projectFolderOrderSchema = Schema.Array(Schema.String);
+
 function sameSidebarProviderEntries(
   left: ReadonlyMap<string, SidebarProviderEntry>,
   right: ReadonlyMap<string, SidebarProviderEntry>,
@@ -419,6 +421,7 @@ function useSidebarThreads(input: {
   readonly routeRowThreadKey: string | null;
   // Set in boring mode: the project groups to fold active threads into, in order.
   readonly folderGroups: readonly SidebarProjectSnapshot[] | null;
+  readonly manualProjectOrder?: boolean;
   // Keeps folders with no active threads, so a project the user filtered to or pinned can start one.
   readonly keepEmptyFolders: (group: SidebarProjectSnapshot) => boolean;
   readonly environmentIds: readonly EnvironmentId[];
@@ -562,7 +565,9 @@ function useSidebarThreads(input: {
             .toSorted(
               (left, right) =>
                 Number(left.group.archived) - Number(right.group.archived) ||
-                Number(right.group.pinned) - Number(left.group.pinned),
+                (input.manualProjectOrder
+                  ? 0
+                  : Number(right.group.pinned) - Number(left.group.pinned)),
             );
           return {
             environmentId,
@@ -978,8 +983,32 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     reportFailure: false,
   });
   const moveProjectThread = useAtomCommand(agentSessionMove);
+  const [projectFolderOrder, setProjectFolderOrder] = useLocalStorage<
+    readonly string[],
+    readonly string[]
+  >("t3.sidebar.project-folder-order.v1", [], projectFolderOrderSchema);
+  const [dragProjectFolder, setDragProjectFolder] = useState<SidebarProjectSnapshot | null>(null);
+  const orderProjectFolders = (groups: readonly SidebarProjectSnapshot[]) =>
+    orderItemsByPreferredIds({
+      items: groups,
+      preferredIds: projectFolderOrder,
+      getId: sidebarFolderRowId,
+    });
   const [projectDragThread, setProjectDragThread] = useState<ScopedThreadRef | null>(null);
   const dropProjectThread = (group: SidebarProjectSnapshot) => {
+    if (dragProjectFolder !== null) {
+      const source = dragProjectFolder;
+      setDragProjectFolder(null);
+      if (source.environmentId !== group.environmentId || source.projectKey === group.projectKey)
+        return;
+      const ids = orderProjectFolders(projectGroups).map(sidebarFolderRowId);
+      const from = ids.indexOf(sidebarFolderRowId(source));
+      if (from < 0) return;
+      ids.splice(from, 1);
+      ids.splice(ids.indexOf(sidebarFolderRowId(group)), 0, sidebarFolderRowId(source));
+      setProjectFolderOrder(ids);
+      return;
+    }
     const source = projectDragThread;
     setProjectDragThread(null);
     if (source === null || source.environmentId !== group.environmentId) return;
@@ -1388,11 +1417,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     threads,
     delegatedUnderParent,
     routeRowThreadKey,
+    manualProjectOrder: projectFolderOrder.length > 0,
     folderGroups: boringSidebarEnabled
-      ? scopedProjectGroups.length === 0
-        ? // An archived project keeps a folder for its active threads, below the rest.
-          [...scopeGroups, ...projectGroups.filter((project) => project.archived)]
-        : scopedProjectGroups
+      ? orderProjectFolders(
+          scopedProjectGroups.length === 0
+            ? // An archived project keeps a folder for its active threads, below the rest.
+              [...scopeGroups, ...projectGroups.filter((project) => project.archived)]
+            : scopedProjectGroups,
+        )
       : null,
     keepEmptyFolders: (group) => scopedProjectGroups.length > 0 || !group.archived,
     environmentIds: [...environmentLabelById.keys()],
@@ -3520,13 +3552,25 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               items.push(
                                 <SidebarProjectFolderHeader
                                   key={sidebarFolderRowId(folder.group)}
+                                  onDragProjectStart={(event) => {
+                                    event.stopPropagation();
+                                    event.dataTransfer.effectAllowed = "move";
+                                    event.dataTransfer.setData(
+                                      "application/x-t3-project",
+                                      sidebarFolderRowId(folder.group),
+                                    );
+                                    setDragProjectFolder(folder.group);
+                                  }}
+                                  onDragProjectEnd={() => setDragProjectFolder(null)}
                                   canDropThread={
-                                    projectDragThread?.environmentId ===
+                                    dragProjectFolder?.environmentId ===
+                                      folder.group.environmentId ||
+                                    (projectDragThread?.environmentId ===
                                       folder.group.environmentId &&
-                                    readEnvironmentScope(
-                                      folder.group.environmentId,
-                                      AuthOrchestrationOperateScope,
-                                    )
+                                      readEnvironmentScope(
+                                        folder.group.environmentId,
+                                        AuthOrchestrationOperateScope,
+                                      ))
                                   }
                                   onDropThread={dropProjectThread}
                                   group={folder.group}

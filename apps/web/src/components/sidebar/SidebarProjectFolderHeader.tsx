@@ -40,6 +40,8 @@ export function sidebarFolderRowId(
  */
 export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHeader(props: {
   canDropThread?: boolean;
+  onDragProjectStart?: React.DragEventHandler<HTMLButtonElement>;
+  onDragProjectEnd?: React.DragEventHandler<HTMLButtonElement>;
   onDropThread?: (group: SidebarProjectSnapshot) => void;
   group: SidebarProjectSnapshot;
   collapsed: boolean;
@@ -90,6 +92,9 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
     >
       <button
         type="button"
+        draggable={props.onDragProjectStart !== undefined}
+        onDragStart={props.onDragProjectStart}
+        onDragEnd={props.onDragProjectEnd}
         role="treeitem"
         tabIndex={-1}
         data-sidebar-row={rowId}
