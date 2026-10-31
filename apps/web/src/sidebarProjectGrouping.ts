@@ -47,6 +47,33 @@ export interface SidebarProjectPickerEntry {
   isPreferred: boolean;
 }
 
+export function splitSidebarProjectGroupsByEnvironment(
+  groups: readonly SidebarProjectSnapshot[],
+): SidebarProjectSnapshot[] {
+  return groups.flatMap((group) => {
+    const membersByEnvironment = new Map<EnvironmentId, SidebarProjectGroupMember[]>();
+    for (const member of group.memberProjects) {
+      const members = membersByEnvironment.get(member.environmentId) ?? [];
+      members.push(member);
+      membersByEnvironment.set(member.environmentId, members);
+    }
+    return [...membersByEnvironment.values()].map((members) => ({
+      ...group,
+      ...members[0]!,
+      // Settings keep their logical key; actions target only this machine's members.
+      projectKey: group.projectKey,
+      pinned: members.some((member) => member.pinnedAt != null),
+      archived: members.every((member) => member.archivedAt != null),
+      memberProjects: members,
+      memberProjectRefs: members.map((member) => ({
+        environmentId: member.environmentId,
+        projectId: member.id,
+      })),
+      groupedProjectCount: members.length,
+    }));
+  });
+}
+
 export function getSidebarProjectSettingsKey(
   group: SidebarProjectSnapshot,
   settings: ProjectGroupingSettings,

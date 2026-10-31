@@ -34,7 +34,7 @@ function BoringSidebarRow() {
   return (
     <SettingsRow
       {...searchableSetting("boring-sidebar")}
-      description="Group sidebar threads into project folders. Pinned threads stay on top, and Snoozed and Settled stay below the folders."
+      description="Group threads by machine and project, including empty projects. Pinned threads lead each project; working, snoozed and settled threads keep their status inside it."
       control={
         <Switch
           checked={settings.boringSidebarEnabled || settings.legacySidebarEnabled}

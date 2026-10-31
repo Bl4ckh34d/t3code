@@ -10,6 +10,7 @@ import {
   buildSidebarProjectSnapshots,
   resolveSidebarProjectScopeKey,
   getSidebarProjectSettingsKey,
+  splitSidebarProjectGroupsByEnvironment,
 } from "./sidebarProjectGrouping";
 import type { Project } from "./types";
 
@@ -47,6 +48,61 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 }
 
 describe("environment grouping", () => {
+  it("keeps machine folders scoped while preserving logical project settings and empty projects", () => {
+    const local = makeProject({ repositoryIdentity });
+    const remote = makeProject({
+      id: ProjectId.make("remote-project"),
+      environmentId: remoteEnvironmentId,
+      workspaceRoot: "/srv/shared-repo",
+      repositoryIdentity,
+    });
+    const empty = makeProject({ id: ProjectId.make("empty"), workspaceRoot: "/empty" });
+    const groups = buildSidebarProjectSnapshots({
+      projects: [local, remote, empty],
+      settings: defaultGroupingSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => null,
+    });
+    const folders = splitSidebarProjectGroupsByEnvironment(groups);
+    expect(folders.map((group) => [group.environmentId, group.id, group.workspaceRoot])).toEqual([
+      [primaryEnvironmentId, local.id, "/tmp/shared-repo"],
+      [remoteEnvironmentId, remote.id, "/srv/shared-repo"],
+      [primaryEnvironmentId, empty.id, "/empty"],
+    ]);
+    expect(folders[0]?.projectKey).toBe(groups[0]?.projectKey);
+    expect(folders[1]?.projectKey).toBe(groups[0]?.projectKey);
+    expect(folders[1]?.memberProjectRefs).toEqual([
+      { environmentId: remoteEnvironmentId, projectId: remote.id },
+    ]);
+    expect(folders[1]?.memberProjects.map((member) => member.id)).toEqual([remote.id]);
+  });
+
+  it("keeps project pin and archive state local to each machine", () => {
+    const groups = buildSidebarProjectSnapshots({
+      projects: [
+        makeProject({ repositoryIdentity, pinnedAt: "2026-10-31T10:00:00.000Z" }),
+        makeProject({
+          id: ProjectId.make("remote"),
+          environmentId: remoteEnvironmentId,
+          repositoryIdentity,
+          archivedAt: "2026-10-31T10:00:00.000Z",
+        }),
+      ],
+      settings: defaultGroupingSettings,
+      primaryEnvironmentId,
+      resolveEnvironmentLabel: () => null,
+    });
+    expect(
+      splitSidebarProjectGroupsByEnvironment(groups).map(({ pinned, archived }) => ({
+        pinned,
+        archived,
+      })),
+    ).toEqual([
+      { pinned: true, archived: false },
+      { pinned: false, archived: true },
+    ]);
+  });
+
   it("opens physical scratch settings from the merged filter, including a remote thread target", () => {
     const local = makeProject({
       title: "No project",

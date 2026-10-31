@@ -147,14 +147,20 @@ cannot drag or move threads within it. Your saved order returns when you turn it
 
 ### Group threads by project (beta)
 
-Turn on **Settings → Labs → Boring sidebar (group by project)** on web and desktop to put active
-threads in a folder for each project. Pinned projects come first. A project with no active
-threads has no folder unless it is pinned or you pick it in the project filter. An archived
-project's folder comes last and shows only while it has active threads. Click a folder to open or
-close it. A closed folder shows how many threads it holds, and a dot when one of them
-needs you. Use the pen button on a folder, or right-click it, to start a thread in that project.
-Pinned threads stay above the folders, and Snoozed and Settled stay below them. In this mode you
-cannot drag threads, and the Working section is off. Each device keeps its own choice.
+Turn on **Settings → Labs → Boring sidebar (group by project)** on web and desktop to browse
+machines, their projects, and each project's threads. The machine name comes from your connection,
+including SSH connections; a green dot means connected, and a gray dot means offline. Projects
+remain separate across machines even when they share a repository. Empty projects are included.
+
+Pinned projects come first within their machine, and pinned threads lead their project. Pin or
+unpin from the project's or thread's context menu. Working, snoozed and settled threads stay in
+their project with a status indicator. Use **Show more** below the tree to load older settled
+threads. Archived projects appear only when they have listed threads or are selected in the filter.
+
+Click a machine or project to fold it; each device remembers its open folders. The current thread
+stays visible with its parents. Use the pen button on a project, or right-click it, to start a
+thread on that machine with the project's workspace and configured defaults. Search still finds
+threads across machines. Dragging threads and the Working section are off in this mode.
 
 ## Settle finished work
 

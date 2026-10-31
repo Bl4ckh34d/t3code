@@ -36,6 +36,25 @@ function press(target: HTMLElement, key: string, init: KeyboardEventInit = {}) {
 }
 
 describe("sidebar keyboard navigation", () => {
+  it("announces three hierarchy levels and navigates from a thread through its project to its machine", () => {
+    using tree = setup();
+    const machine = tree.row("machine");
+    machine.setAttribute("aria-expanded", "true");
+    const project = tree.row("project", "machine");
+    project.setAttribute("aria-expanded", "true");
+    const thread = tree.row("thread", "project");
+    tree.install();
+    expect(machine.getAttribute("aria-level")).toBe("1");
+    expect(project.getAttribute("aria-level")).toBe("2");
+    expect(thread.getAttribute("aria-level")).toBe("3");
+    thread.focus();
+    press(thread, "ArrowLeft");
+    expect(document.activeElement).toBe(project);
+    project.setAttribute("aria-expanded", "false");
+    press(project, "ArrowLeft");
+    expect(document.activeElement).toBe(machine);
+  });
+
   it("moves focus without activating rows, clamps at the ends, and keeps one Tab stop", () => {
     using tree = setup();
     const first = tree.row("first");

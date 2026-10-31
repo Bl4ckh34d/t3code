@@ -763,19 +763,25 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       icon: "failed" as const,
                       className: "text-error-foreground",
                     }
-                  : isWoke
+                  : variantAction === "unsettle"
                     ? {
-                        label: "Woke",
-                        icon: "woke" as const,
-                        className: "text-warning-foreground",
+                        label: "Settled",
+                        icon: "done" as const,
+                        className: "text-muted-foreground",
                       }
-                    : isUnread
+                    : isWoke
                       ? {
-                          label: "Done",
-                          icon: "done" as const,
-                          className: "text-success-foreground",
+                          label: "Woke",
+                          icon: "woke" as const,
+                          className: "text-warning-foreground",
                         }
-                      : null;
+                      : isUnread
+                        ? {
+                            label: "Done",
+                            icon: "done" as const,
+                            className: "text-success-foreground",
+                          }
+                        : null;
   const isWokeStatus = topStatus?.icon === "woke";
 
   const branchMismatch = resolveLocalCheckoutBranchMismatch({
@@ -997,7 +1003,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const accessibility = resolveSidebarRowAccessibility({
     title: thread.title,
-    statusLabel: topStatus?.label ?? null,
+    statusLabel:
+      topStatus?.label ??
+      (variantAction === "unsettle" ? "Settled" : variantAction === "unsnooze" ? "Snoozed" : null),
     projectDisplayName: props.projectDisplayName,
     isActive: props.isActive,
   });
@@ -1220,7 +1228,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     ? "flex flex-col justify-center px-2.5 py-1.5"
                     : "flex h-9 items-center gap-2.5 px-2.5",
                   // Lines titles up with the folder name, past its chevron and icon.
-                  inFolder && "ps-9",
+                  inFolder && "ps-14",
                 )}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
@@ -1231,7 +1239,27 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           >
             {/* `contents` keeps one-line rows a single flex row. */}
             <div className={multiline ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
+              {inFolder ? (
+                <span
+                  aria-hidden
+                  className={cn(
+                    "size-1.5 shrink-0 rounded-full bg-current",
+                    topStatus?.className ??
+                      (variantAction === "unsettle"
+                        ? "text-muted-foreground"
+                        : variantAction === "unsnooze"
+                          ? "text-info-foreground"
+                          : "text-sidebar-foreground"),
+                  )}
+                />
+              ) : null}
               {accessibleTitle}
+              {inFolder && props.isPinned ? (
+                <PinIcon
+                  aria-label="Pinned thread"
+                  className="size-3 shrink-0 text-sidebar-muted-foreground"
+                />
+              ) : null}
               {inFolder ? null : (
                 <span
                   className={cn(
@@ -1303,6 +1331,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       >
                         <TopStatusIcon icon={topStatus.icon} className="size-3" />
                         {topStatus.label}
+                      </span>
+                    ) : inFolder && variantAction === "unsettle" ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                        <CircleCheckIcon aria-hidden className="size-3" />
+                        Settled
                       </span>
                     ) : (
                       <span className="text-xs">
