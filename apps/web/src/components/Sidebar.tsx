@@ -157,6 +157,8 @@ import { threadEnvironment } from "../state/threads";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../state/olderSettledShelf";
 import { useThreadSearch } from "../state/queries";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
+import { useAtomCommand } from "../state/use-atom-command";
+import { agentSessionMove } from "../state/agentSessions";
 import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { canShareWithGuestAtom } from "./chat/guestShareAvailability";
@@ -975,6 +977,17 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
+  const moveProjectThread = useAtomCommand(agentSessionMove);
+  const [projectDragThread, setProjectDragThread] = useState<ScopedThreadRef | null>(null);
+  const dropProjectThread = (group: SidebarProjectSnapshot) => {
+    const source = projectDragThread;
+    setProjectDragThread(null);
+    if (source === null || source.environmentId !== group.environmentId) return;
+    void moveProjectThread({
+      environmentId: source.environmentId,
+      input: { threadId: source.threadId, projectId: group.id },
+    });
+  };
   const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
     onCopy: ({ path }) => {
       toastManager.add({
@@ -3350,6 +3363,25 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         return (
                           <SortableThreadRow
                             key={threadKey}
+                            onProjectDragStart={
+                              folderRow &&
+                              readEnvironmentScope(
+                                thread.environmentId,
+                                AuthOrchestrationOperateScope,
+                              )
+                                ? (event) => {
+                                    event.dataTransfer.effectAllowed = "move";
+                                    event.dataTransfer.setData(
+                                      "application/x-t3-thread",
+                                      threadKey,
+                                    );
+                                    setProjectDragThread(
+                                      scopeThreadRef(thread.environmentId, thread.id),
+                                    );
+                                  }
+                                : undefined
+                            }
+                            onProjectDragEnd={() => setProjectDragThread(null)}
                             sortableId={threadKey}
                             contextDrag={isContextDrag}
                             sortableDisabled={
@@ -3488,6 +3520,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               items.push(
                                 <SidebarProjectFolderHeader
                                   key={sidebarFolderRowId(folder.group)}
+                                  canDropThread={
+                                    projectDragThread?.environmentId ===
+                                      folder.group.environmentId &&
+                                    readEnvironmentScope(
+                                      folder.group.environmentId,
+                                      AuthOrchestrationOperateScope,
+                                    )
+                                  }
+                                  onDropThread={dropProjectThread}
                                   group={folder.group}
                                   collapsed={folder.collapsed}
                                   hiddenThreads={folder.hiddenThreads}

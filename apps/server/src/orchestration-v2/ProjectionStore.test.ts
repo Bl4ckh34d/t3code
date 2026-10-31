@@ -1406,6 +1406,7 @@ it.effect("SQL list older settled threads below a cursor", () =>
       readonly name: string;
       readonly settledDay: number | null;
       readonly project?: string;
+      readonly organizationProject?: string;
       readonly subagent?: boolean;
       readonly archived?: boolean;
       readonly snoozedUntilDay?: number;
@@ -1420,6 +1421,9 @@ it.effect("SQL list older settled threads below a cursor", () =>
           creationSource: "web",
           id: id(input.name),
           projectId: ProjectId.make(input.project ?? "project:a"),
+          ...(input.organizationProject
+            ? { organizationProjectId: ProjectId.make(input.organizationProject) }
+            : {}),
           title: input.name,
           providerInstanceId,
           modelSelection,
@@ -1447,7 +1451,7 @@ it.effect("SQL list older settled threads below a cursor", () =>
     yield* createThread({ name: "a", settledDay: 5 });
     yield* createThread({ name: "b", settledDay: 4 });
     yield* createThread({ name: "c", settledDay: 4 });
-    yield* createThread({ name: "d", settledDay: 3, project: "project:b" });
+    yield* createThread({ name: "d", settledDay: 3, organizationProject: "project:b" });
     yield* createThread({ name: "snoozed", settledDay: 2, snoozedUntilDay: 30 });
     yield* createThread({ name: "recent", settledDay: 20 });
     yield* createThread({ name: "unsettled", settledDay: null });

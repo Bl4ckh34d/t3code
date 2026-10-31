@@ -329,3 +329,13 @@ several selected threads together. Choose **Wake thread** to bring a thread back
 A snoozed thread keeps working and stays hidden until its wake time, even while
 its agent wakes itself for background work. It comes back early only when it needs
 an approval or answer from you, when a run fails, or when you send it a message.
+
+# Synchronizing Codex history
+
+Use **Sync agent history** in the sidebar to import conversation text and reconcile Codex project membership on the primary connection. Synchronization is manual. Other machines need an updated T3 server and their own synchronization.
+
+Drag a chat onto another project folder on the same connection to move its organization. Its execution directory, branch, and worktree remain attached to the original workspace.
+
+Manual synchronization also reconciles project and chat names. The first synchronization uses Codex names as the starting point. Later changes made on either side are copied to the other side. If both names changed differently since the last synchronization, neither name is overwritten; make them agree and synchronize again.
+
+History imports contain user and assistant text, rather than a replay of tools or attachments. Unavailable source folders, unsupported Codex versions, import budgets, and naming conflicts produce an incomplete-sync warning. Resolve persistent warnings before treating the import as complete.

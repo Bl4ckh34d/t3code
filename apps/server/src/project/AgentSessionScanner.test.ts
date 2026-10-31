@@ -1,5 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeOS from "node:os";
+// @effect-diagnostics-next-line nodeBuiltinImport:off - Windows directory junctions are not exposed by Effect FileSystem.symlink.
+import * as NodeFSP from "node:fs/promises";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { describe, expect, it } from "@effect/vitest";
 import {
   AgentSessionImportSource,
@@ -25,6 +28,15 @@ import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 
+// Directory junctions exercise realpath aliases on Windows without requiring
+// the symlink privilege. File-symlink coverage keeps its existing capability gate.
+const linkDirectory = Effect.fn("test.linkDirectory")(function* (target: string, alias: string) {
+  const platform = yield* HostProcess.Platform;
+  yield* Effect.tryPromise(() =>
+    NodeFSP.symlink(target, alias, platform === "win32" ? "junction" : "dir"),
+  );
+});
+
 const makeProjectShell = (workspaceRoot: string): OrchestrationProjectShell => ({
   id: ProjectId.make("project-1"),
   title: "Imported",
@@ -33,6 +45,32 @@ const makeProjectShell = (workspaceRoot: string): OrchestrationProjectShell => (
   scripts: [],
   createdAt: "2026-01-01T00:00:00.000Z",
   updatedAt: "2026-01-01T00:00:00.000Z",
+});
+
+it("retains all conversation messages in full-history mode", () => {
+  const records = [
+    { type: "session_meta", payload: { id: "complete-history" } },
+    ...Array.from({ length: 251 }, (_, index) => ({
+      type: "response_item",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      payload: {
+        type: "message",
+        role: index === 0 ? "user" : "assistant",
+        content: [{ type: index === 0 ? "input_text" : "output_text", text: `Message ${index}` }],
+      },
+    })),
+  ];
+  const thread = AgentSessionScanner.parseAgentSessionTranscript({
+    source: "codex",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    fallbackSessionId: "complete-history",
+    lastActiveAtMs: Date.parse("2026-01-01T00:00:00.000Z"),
+    fullHistory: true,
+    contents: records.map((record) => JSON.stringify(record)).join("\n"),
+  });
+  expect(thread?.messages.map((message) => message.text)).toEqual(
+    Array.from({ length: 251 }, (_, index) => `Message ${index}`),
+  );
 });
 
 const layerProjectStore = (importedWorkspaceRoots: ReadonlyArray<string>) =>
@@ -348,13 +386,12 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
     it.effect("returns the imported project ID through a realpath alias", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
-        const fileSystem = yield* FileSystem.FileSystem;
         const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
         const codexHomePath = yield* makeTempDir("t3code-codex-home-");
         const workspace = yield* makeTempDir("t3code-workspace-");
         const linkParent = yield* makeTempDir("t3code-scanner-links-");
         const workspaceAlias = path.join(linkParent, "workspace-alias");
-        yield* fileSystem.symlink(workspace, workspaceAlias);
+        yield* linkDirectory(workspace, workspaceAlias);
 
         yield* writeTranscript({
           filePath: path.join(claudeHomePath, "projects", "-slug", "a.jsonl"),
@@ -942,7 +979,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
         const worktreeCwd = path.join(configBaseDir, "worktrees", "t3code", "wt-3");
         yield* fileSystem.makeDirectory(worktreeCwd, { recursive: true });
         const symlinkCwd = path.join(linkParent, "innocent-project");
-        yield* fileSystem.symlink(worktreeCwd, symlinkCwd);
+        yield* linkDirectory(worktreeCwd, symlinkCwd);
         yield* writeTranscript({
           filePath: path.join(claudeHomePath, "projects", "-slug", "a.jsonl"),
           contents: claudeSessionLine(symlinkCwd),
@@ -1201,6 +1238,17 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
           ["Legacy prompt", "Legacy answer"],
         ]);
         expect(threads[0]).toMatchObject({ source: "pi", title: "Pi refactor" });
+        const full = yield* Effect.gen(function* () {
+          const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+          return yield* scanner
+            .recentThreads(workspace, [], { fullHistory: true })
+            .pipe(Stream.runCollect);
+        }).pipe(Effect.provide(layerScannerTest({ claudeHomePath, codexHomePath, piAgentDir })));
+        expect(
+          full.flatMap((entry) =>
+            entry._tag === "Importable" ? [entry.thread.providerSessionId] : [],
+          ),
+        ).toContain("claude-old");
       }),
     );
 

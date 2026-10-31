@@ -1,11 +1,18 @@
 import * as Schema from "effect/Schema";
-import { IsoDateTime, NonNegativeInt, ProjectId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import {
+  IsoDateTime,
+  NonNegativeInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+} from "./baseSchemas.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 
 export const AgentSessionSource = Schema.Literals(["claudeAgent", "codex", "pi"]);
 export type AgentSessionSource = typeof AgentSessionSource.Type;
 
 export const AgentSessionImportSource = Schema.Struct({
+  fullHistory: Schema.optional(Schema.Boolean),
   provider: AgentSessionSource,
   providerInstanceId: ProviderInstanceId,
   providerSessionId: TrimmedNonEmptyString,
@@ -49,6 +56,7 @@ export const AgentSessionScanResult = Schema.Struct({
 export type AgentSessionScanResult = typeof AgentSessionScanResult.Type;
 
 export const AgentSessionImportInput = Schema.Struct({
+  fullHistory: Schema.optional(Schema.Boolean),
   projectId: ProjectId,
   expectedWorkspaceRoot: Schema.optional(TrimmedNonEmptyString),
 });
@@ -76,6 +84,16 @@ export const AgentSessionImportResult = Schema.Struct({
   importedCount: NonNegativeInt,
   skippedCount: NonNegativeInt,
 });
+
+export const AgentSessionSyncResult = Schema.Struct({
+  membershipErrorCount: NonNegativeInt,
+  importedCount: NonNegativeInt,
+  skippedCount: NonNegativeInt,
+  unlinkedProjectCount: NonNegativeInt,
+  truncated: Schema.Boolean,
+});
+
+export const AgentSessionMoveInput = Schema.Struct({ threadId: ThreadId, projectId: ProjectId });
 export type AgentSessionImportResult = typeof AgentSessionImportResult.Type;
 
 export class AgentSessionScanError extends Schema.TaggedError<AgentSessionScanError>()(

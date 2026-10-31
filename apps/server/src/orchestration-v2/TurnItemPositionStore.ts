@@ -26,6 +26,7 @@ export interface TurnItemPositionStoreV2Shape {
   readonly normalize: (
     item: OrchestrationV2TurnItem,
     runOrdinal?: number,
+    importedHistory?: boolean,
   ) => Effect.Effect<OrchestrationV2TurnItem, TurnItemPositionStoreError>;
 }
 
@@ -104,7 +105,31 @@ export const layer: Layer.Layer<TurnItemPositionStoreV2, never, SqlClient.SqlCli
     return TurnItemPositionStoreV2.of({
       allocate,
       // Per-event normalization shares the enclosing orchestration span.
-      normalize: Effect.fnUntraced(function* (item, runOrdinal) {
+      normalize: Effect.fnUntraced(function* (item, runOrdinal, importedHistory) {
+        if (
+          importedHistory &&
+          item.runId === null &&
+          item.id.startsWith(`agent-session-import:v2:turn-item:${item.threadId}:`) &&
+          Number.isSafeInteger(item.ordinal) &&
+          item.ordinal > 0 &&
+          item.ordinal < 1_000_000
+        ) {
+          yield* sql`
+            INSERT INTO orchestration_v2_turn_item_positions (thread_id, turn_item_id, ordinal)
+            VALUES (${item.threadId}, ${item.id}, ${item.ordinal})
+            ON CONFLICT(thread_id, turn_item_id) DO UPDATE SET ordinal = excluded.ordinal
+          `.pipe(
+            Effect.mapError(
+              (cause) =>
+                new TurnItemPositionStoreError({
+                  threadId: item.threadId,
+                  turnItemId: item.id,
+                  cause,
+                }),
+            ),
+          );
+          return item;
+        }
         return yield* allocate({
           threadId: item.threadId,
           turnItemId: item.id,

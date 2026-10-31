@@ -3076,6 +3076,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `Thread ${command.threadId} branch changed before the metadata update could be applied.`,
       });
     }
+    if (
+      command.type === "thread.metadata.update" &&
+      command.expectedTitle !== undefined &&
+      thread.title !== command.expectedTitle
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "The chat name changed during synchronization. Sync again.",
+      });
+    }
+    if (command.type === "thread.metadata.update" && command.organizationProjectId != null) {
+      const target = yield* projects
+        .get(command.organizationProjectId)
+        .pipe(mapDispatchError(command));
+      if (Option.isNone(target) || target.value.deletedAt !== null) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: "The destination project no longer exists.",
+        });
+      }
+    }
     if (command.type === "thread.metadata.update" && command.expectedEmpty === true) {
       const records = yield* projectionStore
         .getThreadRecords(command.threadId, ["runs"])
@@ -3535,6 +3558,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           return {
             ...thread,
             ...(command.title === undefined ? {} : { title: command.title }),
+            ...(command.codexSyncedTitle === undefined
+              ? {}
+              : { codexSyncedTitle: command.codexSyncedTitle }),
+            ...(command.organizationProjectId === undefined
+              ? {}
+              : { organizationProjectId: command.organizationProjectId }),
             ...(command.limitRecovery === undefined ? {} : { limitRecovery }),
             ...(command.limitRecovery !== undefined &&
             limitRecovery?.snooze === true &&
@@ -3809,6 +3838,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? {
                 ...thread,
                 ...(command.title === undefined ? {} : { title: command.title }),
+
                 titleRegeneration: null,
                 updatedAt: now,
               }

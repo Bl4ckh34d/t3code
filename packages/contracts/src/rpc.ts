@@ -97,6 +97,8 @@ import {
   AgentSessionScanInput,
   AgentSessionScanResult,
   AgentSessionScanError,
+  AgentSessionSyncResult,
+  AgentSessionMoveInput,
 } from "./agentSessions.ts";
 import {
   AssetAccessError,
@@ -422,6 +424,8 @@ export const WS_METHODS = {
   filesystemGetMetadata: "filesystem.getMetadata",
   agentSessionsScan: "agentSessions.scan",
   agentSessionsImport: "agentSessions.import",
+  agentSessionsSync: "agentSessions.sync",
+  agentSessionsMove: "agentSessions.move",
   assetsCreateUrl: "assets.createUrl",
   assetsPersistChatAttachments: "assets.persistChatAttachments",
   attachmentsCreateUploadUrl: "attachments.createUploadUrl",
@@ -1381,6 +1385,18 @@ const WsAgentSessionsImportRpc = Rpc.make(WS_METHODS.agentSessionsImport, {
   ]),
 });
 
+const WsAgentSessionsSyncRpc = Rpc.make(WS_METHODS.agentSessionsSync, {
+  payload: AgentSessionScanInput,
+  success: AgentSessionSyncResult,
+  error: Schema.Union([AgentSessionScanError, EnvironmentAuthorizationError]),
+});
+
+const WsAgentSessionsMoveRpc = Rpc.make(WS_METHODS.agentSessionsMove, {
+  payload: AgentSessionMoveInput,
+  success: Schema.Void,
+  error: Schema.Union([AgentSessionScanError, EnvironmentAuthorizationError]),
+});
+
 const WsAssetsCreateUrlRpc = Rpc.make(WS_METHODS.assetsCreateUrl, {
   payload: AssetCreateUrlInput,
   success: AssetCreateUrlResult,
@@ -2099,6 +2115,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsFilesystemGetMetadataRpc,
   WsAgentSessionsScanRpc,
   WsAgentSessionsImportRpc,
+  WsAgentSessionsSyncRpc,
+  WsAgentSessionsMoveRpc,
   WsAssetsCreateUrlRpc,
   WsAssetsPersistChatAttachmentsRpc,
   WsAttachmentsCreateUploadUrlRpc,

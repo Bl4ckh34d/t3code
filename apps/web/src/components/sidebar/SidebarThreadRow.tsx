@@ -532,6 +532,8 @@ function TopStatusIcon(props: { icon: keyof typeof TOP_STATUS_ICONS; className: 
 }
 
 type SidebarThreadRowProps = {
+  onProjectDragStart?: React.DragEventHandler<HTMLLIElement> | undefined;
+  onProjectDragEnd?: React.DragEventHandler<HTMLLIElement> | undefined;
   thread: SidebarThreadSummary;
   // "folder" is a one-line row inside a boring sidebar project folder;
   // "folder-multiline" adds the card's branch and PR line under it.
@@ -1201,6 +1203,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     return (
       <li
         data-thread-item={threadKey}
+        draggable={inFolder && props.onProjectDragStart !== undefined}
+        onDragStart={props.onProjectDragStart}
+        onDragEnd={props.onProjectDragEnd}
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
         className={cn(

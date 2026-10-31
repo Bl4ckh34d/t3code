@@ -1609,6 +1609,22 @@ describe("sidebarFolderExpansionKeys", () => {
 });
 
 describe("groupSidebarThreadsByProject", () => {
+  it("groups by organization without changing the execution project", () => {
+    const projectId = ProjectId.make("execution");
+    const organizationProjectId = ProjectId.make("organization");
+    const thread = { environmentId: localEnvironmentId, projectId, organizationProjectId };
+    const groups = [
+      {
+        memberProjectRefs: [
+          { environmentId: localEnvironmentId, projectId: organizationProjectId },
+        ],
+      },
+    ];
+    expect(groupSidebarThreadsByProject(groups, [thread], () => false)[0]?.threads).toEqual([
+      thread,
+    ]);
+    expect(thread.projectId).toBe(projectId);
+  });
   it("puts each thread in its project's folder and drops empty projects unless kept", () => {
     const remoteEnvironmentId = EnvironmentId.make("environment-remote");
     const t3code = ProjectId.make("t3code");

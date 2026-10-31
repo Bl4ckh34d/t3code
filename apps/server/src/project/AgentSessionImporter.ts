@@ -1,8 +1,11 @@
+// @effect-diagnostics nodeBuiltinImport:off - derives import IDs and event revisions synchronously.
+import * as NodeCrypto from "node:crypto";
 import {
   DEFAULT_MODEL,
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
+  CommandId,
   AgentSessionImportProjectChangedError,
   AgentSessionImportProjectNotFoundError,
   AgentSessionImportSource,
@@ -12,6 +15,7 @@ import {
   MessageId,
   ProjectId,
   ProviderDriverKind,
+  ProviderInstanceId,
   ThreadId,
   TurnItemId,
   type AgentSessionImportInput,
@@ -30,6 +34,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Semaphore from "effect/Semaphore";
 
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -37,6 +42,9 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import { synchronizeCodexHistory } from "./CodexHistory.ts";
+import { synchronizeCodexMembership, moveCodexMembership } from "./CodexProjectMembership.ts";
 
 const IMPORT_EVENT_PREFIX = "agent-session-import:v2";
 const CLAUDE_SESSION_ID_PATTERN =
@@ -73,15 +81,6 @@ class AgentSessionThreadProjectConflictError extends Schema.TaggedError<AgentSes
   }
 }
 
-class AgentSessionThreadModifiedError extends Schema.TaggedError<AgentSessionThreadModifiedError>()(
-  "AgentSessionThreadModifiedError",
-  { threadId: ThreadId },
-) {
-  override get message(): string {
-    return `Imported thread '${this.threadId}' already contains non-imported activity.`;
-  }
-}
-
 function dateTime(value: string): DateTime.Utc {
   return DateTime.makeUnsafe(value);
 }
@@ -89,10 +88,15 @@ function dateTime(value: string): DateTime.Utc {
 function messageEvents(input: {
   readonly threadId: ThreadId;
   readonly index: number;
+  readonly key?: string;
   readonly message: AgentSessionScanner.AgentSessionThreadMessage;
 }): ReadonlyArray<OrchestrationV2DomainEvent> {
   const ordinal = input.index + 1;
-  const suffix = String(input.index).padStart(6, "0");
+  const suffix =
+    input.key ??
+    (input.message.nativeId
+      ? `native:${input.message.nativeId}`
+      : String(input.index).padStart(6, "0"));
   const messageId = MessageId.make(`${input.threadId}:${suffix}`);
   const turnItemId = TurnItemId.make(
     `${IMPORT_EVENT_PREFIX}:turn-item:${input.threadId}:${suffix}`,
@@ -119,7 +123,13 @@ function messageEvents(input: {
     nodeId: null,
     providerThreadId: null,
     providerTurnId: null,
-    nativeItemRef: null,
+    nativeItemRef: input.message.nativeId
+      ? {
+          driver: ProviderDriverKind.make("codex"),
+          nativeId: input.message.nativeId,
+          strength: "strong" as const,
+        }
+      : null,
     parentItemId: null,
     ordinal,
     status: "completed" as const,
@@ -166,6 +176,7 @@ function messageEvents(input: {
 }
 
 const make = Effect.gen(function* () {
+  const syncLock = yield* Semaphore.make(1);
   const scanner = yield* AgentSessionScanner.AgentSessionScanner;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const projects = yield* ProjectService.ProjectService;
@@ -174,6 +185,8 @@ const make = Effect.gen(function* () {
   const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
   const importRecentAgentThreads = Effect.fn("importRecentAgentThreadsV2")(function* (
     input: AgentSessionImportInput,
+    refreshDiscovery: boolean = true,
+    supplied?: ReadonlyArray<AgentSessionScanner.AgentSessionRecentThread>,
   ) {
     const project = yield* projects.getById(input.projectId).pipe(
       Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-projects", cause })),
@@ -211,7 +224,12 @@ const make = Effect.gen(function* () {
       }
       return payload.value.importedTranscripts ?? [];
     });
-    const outcomes = scanner.recentThreads(project.workspaceRoot, completedSources);
+    const outcomes = supplied
+      ? Stream.fromIterable(supplied)
+      : scanner.recentThreads(project.workspaceRoot, completedSources, {
+          fullHistory: input.fullHistory === true,
+          refreshDiscovery,
+        });
     const importedThreadIds = new Set<ThreadId>();
     let importedCount = 0;
     let skippedCount = 0;
@@ -270,7 +288,9 @@ const make = Effect.gen(function* () {
             },
             { onConflict: "ignore" },
           );
-          const existing = yield* Effect.option(orchestrator.getThreadRecords(threadId, []));
+          const existing = yield* Effect.option(
+            orchestrator.getThreadRecords(threadId, ["messages", "turnItems"]),
+          );
           if (Option.isSome(existing)) {
             if (existing.value.thread.projectId !== input.projectId) {
               return yield* new AgentSessionThreadProjectConflictError({
@@ -279,9 +299,134 @@ const make = Effect.gen(function* () {
                 actualProjectId: existing.value.thread.projectId,
               });
             }
-            if (existing.value.thread.historyOrigin !== "v1_import") {
-              return yield* new AgentSessionThreadModifiedError({ threadId });
+            if (existing.value.thread.deletedAt !== null) return false;
+            // Reuse imported message IDs and update their timeline ordinals. Legacy
+            // imports contain a capped tail with positional IDs; appending alone
+            // would collide with those ordinals when earlier history is restored.
+            const fingerprint = (message: { role: string; text: string }) =>
+              NodeCrypto.createHash("sha256")
+                .update(JSON.stringify([message.role, message.text]))
+                .digest("hex");
+            const importedItems = new Map(
+              existing.value.turnItems.flatMap((item) =>
+                "messageId" in item && item.messageId ? [[item.messageId, item] as const] : [],
+              ),
+            );
+            const stored = new Map<string, Array<OrchestrationV2TurnItem>>();
+            for (const message of existing.value.messages) {
+              const item = importedItems.get(message.id);
+              if (!item) continue;
+              const hash = fingerprint(message);
+              const bucket = stored.get(hash) ?? [];
+              bucket.push(item);
+              stored.set(hash, bucket);
             }
+            for (const bucket of stored.values()) bucket.sort((a, b) => a.ordinal - b.ordinal);
+            const events: Array<OrchestrationV2DomainEvent> = [];
+            const reorder = (
+              item: OrchestrationV2TurnItem,
+              ordinal: number,
+              sourceMessage?: AgentSessionScanner.AgentSessionThreadMessage,
+            ) => {
+              if (!item.id.startsWith(`${IMPORT_EVENT_PREFIX}:turn-item:${threadId}:`)) return;
+              const nativeItemRef = sourceMessage?.nativeId
+                ? {
+                    driver: ProviderDriverKind.make("codex"),
+                    nativeId: sourceMessage.nativeId,
+                    strength: "strong" as const,
+                  }
+                : item.nativeItemRef;
+              const contentChanged =
+                sourceMessage !== undefined && "text" in item && item.text !== sourceMessage.text;
+              if (
+                item.ordinal === ordinal &&
+                nativeItemRef?.nativeId === item.nativeItemRef?.nativeId &&
+                !contentChanged
+              )
+                return;
+              const revision = NodeCrypto.randomUUID();
+              events.push({
+                id: EventId.make(`${item.id}:source:${revision}`),
+                type: "turn-item.updated",
+                threadId,
+                occurredAt: dateTime(thread.updatedAt),
+                payload: {
+                  ...item,
+                  ordinal,
+                  nativeItemRef,
+                  ...(sourceMessage && "text" in item ? { text: sourceMessage.text } : {}),
+                },
+              });
+              if (contentChanged && "messageId" in item) {
+                const message = existing.value.messages.find(
+                  (entry) => entry.id === item.messageId,
+                );
+                if (message && sourceMessage)
+                  events.push({
+                    id: EventId.make(`${message.id}:source:${revision}`),
+                    type: "message.updated",
+                    threadId,
+                    occurredAt: dateTime(thread.updatedAt),
+                    payload: {
+                      ...message,
+                      text: sourceMessage.text,
+                      updatedAt: dateTime(thread.updatedAt),
+                    },
+                  });
+              }
+            };
+            const sourceCounts = new Map<string, number>();
+            const usedItems = new Set<TurnItemId>();
+            const bucketOffsets = new Map<string, number>();
+            const nativeItems = new Map(
+              existing.value.turnItems.flatMap((item) =>
+                item.nativeItemRef ? [[item.nativeItemRef.nativeId, item] as const] : [],
+              ),
+            );
+            thread.messages.forEach((message, index) => {
+              const hash = fingerprint(message);
+              const occurrence = (sourceCounts.get(hash) ?? 0) + 1;
+              sourceCounts.set(hash, occurrence);
+              const nativeItem =
+                message.nativeId === undefined ? undefined : nativeItems.get(message.nativeId);
+              const bucket = stored.get(hash) ?? [];
+              let offset = bucketOffsets.get(hash) ?? 0;
+              while (offset < bucket.length && usedItems.has(bucket[offset]!.id)) offset++;
+              const item =
+                nativeItem && !usedItems.has(nativeItem.id) ? nativeItem : bucket[offset];
+              bucketOffsets.set(hash, offset);
+              if (item) {
+                usedItems.add(item.id);
+                reorder(item, index + 1, message);
+              } else
+                events.push(
+                  ...messageEvents({
+                    threadId,
+                    message,
+                    index,
+                    key: message.nativeId
+                      ? `native:${message.nativeId}`
+                      : `sync:${hash}:${occurrence}`,
+                  }),
+                );
+            });
+            // Keep T3-authored activity and unmatched source items in their order,
+            // after the recovered source transcript rather than overwriting them.
+            const unmatched = new Set(
+              [...stored.values()]
+                .flat()
+                .filter((item) => !usedItems.has(item.id))
+                .map((item) => item.id),
+            );
+            const remaining = existing.value.turnItems
+              .filter(
+                (item) =>
+                  unmatched.has(item.id) &&
+                  item.id.startsWith(`${IMPORT_EVENT_PREFIX}:turn-item:${threadId}:`),
+              )
+              .toSorted((a, b) => a.ordinal - b.ordinal);
+            remaining.forEach((item, index) => reorder(item, thread.messages.length + index + 1));
+            if (events.length > 0) yield* eventSink.write({ events, importedHistory: true });
             yield* persistRuntime;
             yield* runtimes.recordImportedTranscript({ threadId, source });
             return true;
@@ -355,6 +500,7 @@ const make = Effect.gen(function* () {
           };
 
           const committed = yield* eventSink.write({
+            importedHistory: true,
             unlessNativeThreadOwned: providerThread,
             events: [
               {
@@ -404,7 +550,152 @@ const make = Effect.gen(function* () {
     return { importedCount, skippedCount } satisfies AgentSessionImportResult;
   });
 
-  return { importRecentAgentThreads };
+  const sync = Effect.gen(function* () {
+    const scan = yield* scanner.scan;
+    let importedCount = 0;
+    let skippedCount = 0;
+    let unlinkedProjectCount = 0;
+    for (const candidate of scan.candidates) {
+      // Codex history is paginated by the native API below, not by rollout files.
+      if (candidate.sources.every((source) => source === "codex")) continue;
+      let projectId = candidate.projectId;
+      if (projectId === undefined) {
+        const key = NodeCrypto.createHash("sha256")
+          .update(normalizeProjectPathForComparison(candidate.path))
+          .digest("hex");
+        const created = yield* Effect.option(
+          projects.bootstrap({
+            commandId: CommandId.make(`agent-history-project:${key}`),
+            projectId: ProjectId.make(`agent-history:${key}`),
+            title: candidate.title,
+            workspaceRoot: candidate.path,
+          }),
+        );
+        if (Option.isNone(created)) {
+          unlinkedProjectCount += 1;
+          continue;
+        }
+        projectId = created.value.project.id;
+      }
+      const result = yield* importRecentAgentThreads(
+        {
+          projectId,
+          expectedWorkspaceRoot: candidate.path,
+          fullHistory: true,
+        },
+        false,
+      ).pipe(Effect.orElseSucceed(() => ({ importedCount: 0, skippedCount: 1 })));
+      importedCount += result.importedCount;
+      skippedCount += result.skippedCount;
+    }
+    let membershipErrorCount = 0;
+    const instances = new Set(
+      (yield* runtimes
+        .list()
+        .pipe(
+          Effect.mapError(
+            (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+          ),
+        )).flatMap((runtime) =>
+        runtime.adapterKey === "codex" && runtime.providerInstanceId !== null
+          ? [runtime.providerInstanceId]
+          : [],
+      ),
+    );
+    const settings = yield* (yield* ServerSettings.ServerSettingsService).getSettings.pipe(
+      Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-settings", cause })),
+    );
+    for (const [id, instance] of Object.entries(settings.providerInstances)) {
+      if (instance.driver === "codex" && instance.enabled !== false)
+        instances.add(ProviderInstanceId.make(id));
+    }
+    for (const instanceId of instances) {
+      const history = yield* synchronizeCodexHistory(instanceId, (native, messages) =>
+        Effect.gen(function* () {
+          if (messages.length === 0) return;
+          const threadId = ThreadId.make(`import:${instanceId}:${native.id}`);
+          const existing = yield* Effect.option(orchestrator.getThreadRecords(threadId, []));
+          let projectId = Option.isSome(existing) ? existing.value.thread.projectId : undefined;
+          if (projectId === undefined) {
+            const key = NodeCrypto.createHash("sha256")
+              .update(normalizeProjectPathForComparison(native.cwd))
+              .digest("hex");
+            const created = yield* projects.bootstrap({
+              commandId: CommandId.make(`agent-history-project:${key}`),
+              projectId: ProjectId.make(`agent-history:${key}`),
+              title: native.cwd.split(/[\\/]/).filter(Boolean).at(-1) ?? "Codex",
+              workspaceRoot: native.cwd,
+            });
+            projectId = created.project.id;
+          }
+          const result = yield* importRecentAgentThreads({ projectId, fullHistory: true }, false, [
+            {
+              _tag: "Importable",
+              source: {
+                provider: "codex",
+                providerInstanceId: instanceId,
+                providerSessionId: native.id,
+                filePath: `codex-api:${native.id}`,
+                size: messages.length,
+                mtimeMs: native.updatedAt * 1000,
+                device: 0,
+                inode: null,
+                birthtimeMs: null,
+                fullHistory: true,
+              },
+              thread: {
+                source: "codex",
+                providerInstanceId: instanceId,
+                providerSessionId: native.id,
+                title: native.name ?? (native.preview.slice(0, 120) || "Codex chat"),
+                model: null,
+                createdAt: DateTime.formatIso(DateTime.makeUnsafe(native.createdAt * 1000)),
+                updatedAt: DateTime.formatIso(DateTime.makeUnsafe(native.updatedAt * 1000)),
+                messages,
+              },
+            },
+          ]);
+          importedCount += result.importedCount;
+          skippedCount += result.skippedCount;
+        }),
+      ).pipe(
+        Effect.scoped,
+        Effect.orElseSucceed(() => 1),
+      );
+      skippedCount += history;
+      yield* synchronizeCodexMembership(instanceId).pipe(
+        Effect.scoped,
+        Effect.catch((cause) =>
+          Effect.logWarning("Codex project membership sync failed", { cause }).pipe(
+            Effect.tap(
+              Effect.sync(() => {
+                membershipErrorCount++;
+              }),
+            ),
+          ),
+        ),
+      );
+    }
+    return {
+      membershipErrorCount,
+      importedCount,
+      skippedCount,
+      unlinkedProjectCount,
+      truncated: scan.truncated === true,
+    };
+  });
+  const move = (input: { threadId: ThreadId; projectId: ProjectId }) =>
+    moveCodexMembership(input.threadId, input.projectId).pipe(
+      Effect.scoped,
+      Effect.timeout("30 seconds"),
+      Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-projects", cause })),
+    );
+  return {
+    importRecentAgentThreads,
+    sync: sync.pipe(syncLock.withPermits(1)),
+    move: (input: { threadId: ThreadId; projectId: ProjectId }) =>
+      move(input).pipe(syncLock.withPermits(1)),
+  };
 });
 
 type AgentSessionImporterShape = Effect.Success<typeof make>;

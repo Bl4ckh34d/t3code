@@ -73,6 +73,8 @@ export interface EventSinkV2Shape {
       OrchestrationV2ProviderThread,
       "driver" | "providerInstanceId" | "appThreadId" | "nativeThreadRef"
     >;
+    /** Preserve source order when backfilling imported, runless history. */
+    readonly importedHistory?: boolean;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -87,12 +89,16 @@ export interface EventSinkV2Shape {
       OrchestrationV2ProviderThread,
       "driver" | "providerInstanceId" | "appThreadId" | "nativeThreadRef"
     >;
+    /** Preserve source order when backfilling imported, runless history. */
+    readonly importedHistory?: boolean;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeIfRunCurrent: (input: {
+    /** Preserve source order when backfilling imported, runless history. */
+    readonly importedHistory?: boolean;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly threadId: ThreadId;
@@ -110,6 +116,8 @@ export interface EventSinkV2Shape {
   >;
   /** Commits only if the expected attempt and ordinal still own the provider thread, protecting newer attempts. */
   readonly writeIfProviderThreadOwner: (input: {
+    /** Preserve source order when backfilling imported, runless history. */
+    readonly importedHistory?: boolean;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly providerThreadId: ProviderThreadId;
@@ -329,7 +337,24 @@ const layerBase: Layer.Layer<
         });
       });
 
-    const normalizeEvents = (events: ReadonlyArray<OrchestrationV2DomainEvent>) => {
+    const normalizeEvents = Effect.fn("normalizeEvents")(function* (
+      events: ReadonlyArray<OrchestrationV2DomainEvent>,
+      importedHistory = false,
+    ) {
+      if (importedHistory) {
+        // Release changed import positions together before assigning source order.
+        // The surrounding transaction rolls this back if any event fails.
+        for (const event of events) {
+          if (
+            event.type === "turn-item.updated" &&
+            event.payload.runId === null &&
+            event.payload.id.startsWith(`agent-session-import:v2:turn-item:${event.threadId}:`)
+          ) {
+            yield* sql`DELETE FROM orchestration_v2_turn_item_positions
+              WHERE thread_id = ${event.threadId} AND turn_item_id = ${event.payload.id}`;
+          }
+        }
+      }
       const runOrdinals = new Map(
         events.flatMap((event) =>
           event.type === "run.created" || event.type === "run.updated"
@@ -337,7 +362,7 @@ const layerBase: Layer.Layer<
             : [],
         ),
       );
-      return Effect.forEach(
+      return yield* Effect.forEach(
         events,
         (event): Effect.Effect<OrchestrationV2DomainEvent, unknown> =>
           event.type === "turn-item.updated"
@@ -345,12 +370,13 @@ const layerBase: Layer.Layer<
                 .normalize(
                   event.payload,
                   event.payload.runId === null ? undefined : runOrdinals.get(event.payload.runId),
+                  importedHistory,
                 )
                 .pipe(Effect.map((payload) => ({ ...event, payload })))
             : Effect.succeed(event),
         { concurrency: 1 },
       );
-    };
+    });
 
     const applyStoredEvents =
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
@@ -441,6 +467,7 @@ const layerBase: Layer.Layer<
             input.guardPendingUserInputCancellations === true
               ? yield* guardUserInputCancellations(events)
               : events,
+            input.importedHistory,
           );
           const committed = yield* eventStore.append({
             ...(input.commandId === undefined ? {} : { commandId: input.commandId }),

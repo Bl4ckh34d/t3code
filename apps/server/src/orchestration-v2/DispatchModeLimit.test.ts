@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  EventId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -13,6 +14,7 @@ import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import { DispatchModeLimit } from "./DispatchModeLimit.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProjectStore from "./ProjectStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -28,6 +30,7 @@ const adapter = {
 const layerDatabase = SqlitePersistence.layerMemory;
 const layerTest = Layer.mergeAll(
   layerDatabase,
+  ProjectStore.layer.pipe(Layer.provide(layerDatabase)),
   ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
   ProviderReplayHarness.layerWithRegistry(
     { name: "dispatch-mode-limit" },
@@ -38,7 +41,7 @@ const layerTest = Layer.mergeAll(
 
 const supervised = { runtimeMode: "approval-required", interactionMode: "default" } as const;
 
-const createThread = (threadId: ThreadId) =>
+const createThread = (threadId: ThreadId, worktreePath: string | null = null) =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     yield* orchestrator.dispatch({
@@ -49,14 +52,70 @@ const createThread = (threadId: ThreadId) =>
       title: "Before",
       modelSelection: { instanceId, model: "gpt-5" },
       ...supervised,
-      branch: null,
-      worktreePath: null,
+      branch: worktreePath === null ? null : "feature/execution",
+      worktreePath,
       createdBy: "user",
       creationSource: "web",
     });
   });
 
 it.layer(layerTest)("DispatchModeLimit", (it) => {
+  it.effect(
+    "moves organization while preserving execution settings and rejects missing destinations",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        const projects = yield* ProjectStore.ProjectStoreV2;
+        const threadId = ThreadId.make("thread:organization");
+        const target = ProjectId.make("project:organization");
+        yield* createThread(threadId, "/workspace/execution");
+        const before = yield* projections.getThread(threadId);
+        const command = {
+          type: "thread.metadata.update" as const,
+          commandId: CommandId.make("move-organization"),
+          threadId,
+          organizationProjectId: target,
+        };
+        {
+          const failure = yield* orchestrator.dispatch(command).pipe(Effect.flip);
+          assert.equal(failure._tag, "OrchestratorDispatchError");
+        }
+        yield* projects.apply({
+          sequence: 1,
+          eventId: EventId.make("organization-project"),
+          aggregateKind: "project",
+          aggregateId: target,
+          occurredAt: "2026-10-31T00:00:00.000Z",
+          commandId: null,
+          causationEventId: null,
+          correlationId: null,
+          metadata: {},
+          type: "project.created",
+          payload: {
+            projectId: target,
+            title: "Organization",
+            workspaceRoot: "/workspace/other",
+            defaultModelSelection: null,
+            scripts: [],
+            createdAt: "2026-10-31T00:00:00.000Z",
+            updatedAt: "2026-10-31T00:00:00.000Z",
+          },
+        });
+        yield* orchestrator.dispatch({
+          ...command,
+          commandId: CommandId.make("move-organization-retry"),
+        });
+        const after = yield* projections.getThread(threadId);
+        assert.equal(after.organizationProjectId, target);
+        assert.equal(after.projectId, before.projectId);
+        assert.equal(after.worktreePath, before.worktreePath);
+        assert.equal(after.branch, before.branch);
+        assert.equal(after.runtimeMode, before.runtimeMode);
+        assert.equal(after.activeProviderThreadId, before.activeProviderThreadId);
+      }),
+  );
+
   it.effect("refuses a limited command on a thread its user raised, and records nothing", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

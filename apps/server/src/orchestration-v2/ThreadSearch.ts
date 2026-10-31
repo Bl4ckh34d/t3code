@@ -163,14 +163,14 @@ export const messageHitsQuery = (
   { match, substrings, projectId, excludedThreadIds }: typeof SearchRequest.Encoded,
 ) => sql`
     WITH eligible AS MATERIALIZED (
-      SELECT threads.thread_id, threads.project_id
+      SELECT threads.thread_id, COALESCE(json_extract(threads.payload_json, '$.organizationProjectId'), threads.project_id) AS project_id
       FROM orchestration_v2_projection_threads AS threads
       INNER JOIN projection_projects AS projects
-        ON projects.project_id = threads.project_id
+        ON projects.project_id = COALESCE(json_extract(threads.payload_json, '$.organizationProjectId'), threads.project_id)
       WHERE threads.deleted_at IS NULL
         AND threads.archived_at IS NULL
         AND projects.deleted_at IS NULL
-        AND (${projectId} IS NULL OR threads.project_id = ${projectId})
+        AND (${projectId} IS NULL OR COALESCE(json_extract(threads.payload_json, '$.organizationProjectId'), threads.project_id) = ${projectId})
         AND threads.thread_id NOT IN (SELECT value FROM json_each(${excludedThreadIds}))
         AND json_extract(threads.payload_json, '$.lineage.relationshipToParent')
           IS NOT 'subagent'
@@ -327,14 +327,14 @@ export const make = Effect.gen(function* () {
         ${latestUserMessageAt(sql)} AS "latestUserMessageAt"
       FROM orchestration_v2_projection_threads AS threads
       INNER JOIN projection_projects AS projects
-        ON projects.project_id = threads.project_id
+        ON projects.project_id = COALESCE(json_extract(threads.payload_json, '$.organizationProjectId'), threads.project_id)
       WHERE threads.deleted_at IS NULL
         AND threads.archived_at IS NULL
         AND projects.deleted_at IS NULL
         AND json_extract(threads.payload_json, '$.lineage.relationshipToParent')
           IS NOT 'subagent'
         AND json_extract(threads.payload_json, '$.lineage.sideChat') IS NOT 1
-        AND (${projectId} IS NULL OR threads.project_id = ${projectId})
+        AND (${projectId} IS NULL OR COALESCE(json_extract(threads.payload_json, '$.organizationProjectId'), threads.project_id) = ${projectId})
     `,
   });
 
@@ -358,7 +358,7 @@ export const make = Effect.gen(function* () {
         ${latestUserMessageAt(sql)} AS "latestUserMessageAt"
       FROM orchestration_v2_projection_threads AS threads
       INNER JOIN projection_projects AS projects
-        ON projects.project_id = threads.project_id
+        ON projects.project_id = COALESCE(json_extract(threads.payload_json, '$.organizationProjectId'), threads.project_id)
       WHERE threads.deleted_at IS NULL
         AND json_extract(threads.payload_json, '$.archivedAt') IS NULL
         AND projects.deleted_at IS NULL
@@ -368,7 +368,7 @@ export const make = Effect.gen(function* () {
         AND json_extract(threads.payload_json, '$.settledOverride') = 'settled'
         AND json_extract(threads.payload_json, '$.settledAt') < ${before}
         AND (${projectIds} IS NULL
-          OR threads.project_id IN (SELECT value FROM json_each(${projectIds})))
+          OR COALESCE(json_extract(threads.payload_json, '$.organizationProjectId'), threads.project_id) IN (SELECT value FROM json_each(${projectIds})))
     `,
   });
 
@@ -391,7 +391,7 @@ export const make = Effect.gen(function* () {
         AND json_extract(threads.payload_json, '$.settledOverride') = 'settled'
         AND json_extract(threads.payload_json, '$.settledAt') < ${before}
         AND (${projectIds} IS NULL
-          OR threads.project_id IN (SELECT value FROM json_each(${projectIds})))
+          OR COALESCE(json_extract(threads.payload_json, '$.organizationProjectId'), threads.project_id) IN (SELECT value FROM json_each(${projectIds})))
     `,
   });
 
@@ -549,7 +549,7 @@ export const make = Effect.gen(function* () {
       .slice(0, limit)
       .map(({ item }) => ({
         threadId: item.thread.id,
-        projectId: item.thread.projectId,
+        projectId: item.thread.organizationProjectId ?? item.thread.projectId,
         title: item.thread.title,
         source: "title",
       }));

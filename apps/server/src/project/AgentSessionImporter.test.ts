@@ -2,6 +2,9 @@ import { expect, it } from "@effect/vitest";
 import {
   type AgentSessionSource,
   EventId,
+  MessageId,
+  TurnItemId,
+  RunId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -25,6 +28,7 @@ import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as TurnItemPositionStore from "../orchestration-v2/TurnItemPositionStore.ts";
 import {
   CLAUDE_MODEL_SELECTION,
   CODEX_MODEL_SELECTION,
@@ -34,6 +38,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as AgentSessionImporter from "./AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
+import { readCodexThreadOwners } from "./CodexProjectMembership.ts";
 
 const projectId = ProjectId.make("agent-session-import-project");
 const timestamp = "2026-09-01T10:00:00.000Z";
@@ -46,6 +51,7 @@ const persistence = Layer.mergeAll(
   EventSink.layer.pipe(Layer.provide(stores)),
   ProviderSessionRuntime.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
   IdAllocator.layer,
+  TurnItemPositionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
 );
 
 function candidate(
@@ -84,6 +90,131 @@ function candidate(
 }
 
 const PI_MODEL_SELECTION = { instanceId: ProviderInstanceId.make("pi"), model: "default" };
+
+it.effect("restores source order when expanding a legacy capped import", () =>
+  Effect.gen(function* () {
+    const source = candidate(CODEX_MODEL_SELECTION, "legacy-order");
+    const messages = Array.from({ length: 251 }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      text: `Message ${index}`,
+      createdAt: timestamp,
+    }));
+    const capped = {
+      ...source,
+      thread: { ...source.thread, messages: [messages[0]!, ...messages.slice(-199)] },
+    };
+    yield* (yield* makeImporter([capped])).run;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = importId(source);
+    const initial = yield* projections.getThreadRecords(threadId, ["messages", "turnItems"]);
+    const nativeMessageId = MessageId.make("t3-authored-message");
+    const nativeItemId = TurnItemId.make("t3-authored-item");
+    const runId = RunId.make("t3-resumed-run");
+    const ordinal = yield* (yield* TurnItemPositionStore.TurnItemPositionStoreV2).allocate({
+      threadId,
+      turnItemId: nativeItemId,
+      runId,
+      runOrdinal: 1,
+    });
+    const firstItem = initial.turnItems.find((item) => item.type === "user_message")!;
+    if (firstItem.type !== "user_message") return;
+    const nativeItem = {
+      ...firstItem,
+      id: nativeItemId,
+      messageId: nativeMessageId,
+      runId,
+      ordinal,
+      text: "Resumed in T3",
+      nativeItemRef: {
+        driver: ProviderDriverKind.make("codex"),
+        nativeId: "native-resume",
+        strength: "strong" as const,
+      },
+    };
+    yield* (yield* EventSink.EventSinkV2).write({
+      events: [
+        {
+          id: EventId.make("t3-resume-message"),
+          threadId,
+          occurredAt: now,
+          type: "message.updated",
+          payload: { ...initial.messages[0]!, id: nativeMessageId, runId, text: "Resumed in T3" },
+        },
+        {
+          id: EventId.make("t3-resume-item"),
+          threadId,
+          occurredAt: now,
+          type: "turn-item.updated",
+          payload: nativeItem,
+        },
+      ],
+    });
+    const fullMessages = [
+      ...messages,
+      {
+        role: "user" as const,
+        text: "Resumed in T3",
+        createdAt: timestamp,
+        nativeId: "native-resume",
+      },
+    ];
+    const full = { ...source, thread: { ...source.thread, messages: fullMessages } };
+    const importer = yield* makeImporter([full]);
+    yield* importer.run;
+    yield* importer.run;
+    const records = yield* projections.getThreadRecords(importId(source), ["turnItems"]);
+    const items = [...records.turnItems].sort((a, b) => a.ordinal - b.ordinal);
+    expect(items.map((item) => ("text" in item ? item.text : null))).toEqual(
+      fullMessages.map((message) => message.text),
+    );
+    expect(new Set(items.map((item) => item.ordinal)).size).toBe(252);
+    expect(items.find((item) => item.id === nativeItemId)).toEqual(nativeItem);
+  }).pipe(Effect.scoped, Effect.provide(persistence)),
+);
+
+it.effect("appends source messages on reimport without duplicating existing history", () =>
+  Effect.gen(function* () {
+    const source = candidate(CODEX_MODEL_SELECTION, "incremental");
+    const first = yield* makeImporter([source]);
+    yield* first.run;
+    const updated = {
+      ...source,
+      source: { ...source.source, size: 200, mtimeMs: 3 },
+      thread: {
+        ...source.thread,
+        messages: [
+          ...source.thread.messages,
+          { role: "user" as const, text: "Another task", createdAt: timestamp },
+        ],
+      },
+    };
+    const second = yield* makeImporter([updated]);
+    yield* second.run;
+    yield* second.run;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const records = yield* projections.getThreadRecords(importId(source), ["messages"]);
+    expect(records.messages.map((message) => message.text)).toEqual([
+      "Fix it",
+      "Fixed",
+      "Another task",
+    ]);
+    const repeated = {
+      ...updated,
+      thread: {
+        ...updated.thread,
+        messages: [...updated.thread.messages, updated.thread.messages[2]!],
+      },
+    };
+    const third = yield* makeImporter([repeated]);
+    yield* third.run;
+    yield* third.run;
+    expect(
+      (yield* projections.getThreadRecords(importId(source), ["messages"])).messages.map(
+        (message) => message.text,
+      ),
+    ).toEqual(["Fix it", "Fixed", "Another task", "Another task"]);
+  }).pipe(Effect.scoped, Effect.provide(persistence)),
+);
 
 // Pi threads are owned by their session file path, not the session UUID.
 const nativeId = ({ source }: ReturnType<typeof candidate>) =>
@@ -285,6 +416,8 @@ it.effect(
       ]);
 
       expect(yield* importer.run).toEqual({ importedCount: 3, skippedCount: 0 });
+      const nativeOwners = yield* readCodexThreadOwners(CODEX_MODEL_SELECTION.instanceId);
+      expect(nativeOwners.get(active.source.providerSessionId)).toEqual([owners[0]]);
       for (const source of [active, archived, deleted, ownedPi]) {
         const threadId = importId(source);
         expect(yield* Effect.option(projections.getThread(threadId))).toEqual(Option.none());

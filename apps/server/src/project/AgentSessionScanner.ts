@@ -134,6 +134,7 @@ const decodeCodexSessionIndexEntry = Schema.decodeUnknownOption(
 type DecodedTranscriptRecord = typeof TranscriptRecord.Type;
 
 interface AgentSessionTranscriptMetadata {
+  readonly fullHistory?: boolean;
   readonly source: AgentSessionSource;
   readonly providerInstanceId: ProviderInstanceId;
   readonly fallbackSessionId: string;
@@ -141,6 +142,7 @@ interface AgentSessionTranscriptMetadata {
 }
 
 export interface AgentSessionThreadMessage {
+  readonly nativeId?: string;
   readonly role: "user" | "assistant";
   readonly text: string;
   readonly createdAt: string;
@@ -174,6 +176,7 @@ export class AgentSessionScanner extends Context.Service<
     readonly recentThreads: (
       workspaceRoot: string,
       completedSources?: ReadonlyArray<AgentSessionImportSource>,
+      options?: { readonly fullHistory?: boolean; readonly refreshDiscovery?: boolean },
     ) => Stream.Stream<AgentSessionRecentThread, AgentSessionScanError>;
   }
 >()("t3/project/AgentSessionScanner") {}
@@ -459,7 +462,7 @@ function parseAgentSessionRecords(
       derivedTitle = deriveTitle(input.source, message.text);
     }
     messages.push(message);
-    if (messages.length > MAX_IMPORTED_MESSAGES) messages.shift();
+    if (!input.fullHistory && messages.length > MAX_IMPORTED_MESSAGES) messages.shift();
   };
 
   const hasMatchingCodexEventInTurn = (text: string) => {
@@ -1507,15 +1510,19 @@ export const make = Effect.gen(function* () {
   const prepareRecentThreads = Effect.fn("AgentSessionScanner.prepareRecentThreads")(function* (
     workspaceRoot: string,
     completedSources: ReadonlyArray<AgentSessionImportSource>,
+    options: { readonly fullHistory?: boolean; readonly refreshDiscovery?: boolean },
   ) {
     const root = path.resolve(expandHomePath(workspaceRoot, homeDir));
     const realRoot = yield* fileSystem.realPath(root).pipe(Effect.orElseSucceed(() => root));
     if (isExcludedProjectPath(root) || isExcludedProjectPath(realRoot)) return Stream.empty;
     const rootIdentity = yield* directoryIdentity(root);
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
-    const cutoffMs = nowMs - RECENT_THREAD_WINDOW_MS;
+    const cutoffMs = options.fullHistory ? -Infinity : nowMs - RECENT_THREAD_WINDOW_MS;
 
-    const candidates = cachedCandidates ?? (yield* collectCandidates()).candidates;
+    const candidates =
+      options.fullHistory && options.refreshDiscovery !== false
+        ? (yield* collectCandidates()).candidates
+        : (cachedCandidates ?? (yield* collectCandidates()).candidates);
     cachedCandidates = candidates;
 
     const eligibleTranscripts: Array<{
@@ -1578,7 +1585,9 @@ export const make = Effect.gen(function* () {
           const identity = transcriptIdentity(transcript.filePath, stats.value);
           const completedSource = completed?.find(
             (source) =>
-              source.provider === candidate.source && sameTranscriptIdentity(source, identity),
+              source.provider === candidate.source &&
+              (!options.fullHistory || source.fullHistory === true) &&
+              sameTranscriptIdentity(source, identity),
           );
           if (completedSource !== undefined) {
             const sessionKey = `${completedSource.providerInstanceId}\0${completedSource.providerSessionId}`;
@@ -1627,6 +1636,7 @@ export const make = Effect.gen(function* () {
               providerInstanceId: candidate.providerInstanceId,
               fallbackSessionId: path.basename(transcript.filePath, ".jsonl"),
               lastActiveAtMs: transcript.mtimeMs,
+              fullHistory: options.fullHistory === true,
             },
             snapshot.records,
             snapshot.claudeFields,
@@ -1644,6 +1654,7 @@ export const make = Effect.gen(function* () {
           }
 
           const source: AgentSessionImportSource = {
+            ...(options.fullHistory ? { fullHistory: true } : {}),
             ...identity,
             provider: parsedThread.source,
             providerInstanceId: parsedThread.providerInstanceId,
@@ -1670,7 +1681,8 @@ export const make = Effect.gen(function* () {
   const recentThreads: AgentSessionScanner["Service"]["recentThreads"] = (
     workspaceRoot,
     completedSources = [],
-  ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources));
+    options = {},
+  ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources, options));
 
   return AgentSessionScanner.of({ scan, recentThreads });
 });

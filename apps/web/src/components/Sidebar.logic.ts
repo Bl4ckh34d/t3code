@@ -523,6 +523,7 @@ type ScopedSidebarProject = SidebarProject & {
 type ScopedSidebarThread = ThreadSortInput & {
   environmentId: string;
   projectId: string;
+  organizationProjectId?: string | null | undefined;
   archivedAt: string | null;
 };
 
@@ -626,6 +627,7 @@ export function resolveSidebarRowThreadId(
 export function filterSidebarV2VisibleThreads<
   T extends Pick<SidebarThreadSummary, "archivedAt" | "environmentId" | "id" | "lineage"> & {
     projectId: string;
+    organizationProjectId?: string | null | undefined;
   },
 >(
   threads: readonly T[],
@@ -641,7 +643,9 @@ export function filterSidebarV2VisibleThreads<
         delegatedUnderParent,
       ) &&
       (scopedProjectKeys === null ||
-        scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
+        scopedProjectKeys.has(
+          `${thread.environmentId}:${thread.organizationProjectId ?? thread.projectId}`,
+        )),
   );
 }
 
@@ -985,7 +989,9 @@ export function groupSidebarThreadsByProject<
       readonly projectId: string;
     }>;
   },
-  TThread extends Pick<SidebarThreadSummary, "environmentId" | "projectId">,
+  TThread extends Pick<SidebarThreadSummary, "environmentId" | "projectId"> & {
+    readonly organizationProjectId?: string | null | undefined;
+  },
 >(
   groups: readonly TGroup[],
   threads: readonly TThread[],
@@ -999,7 +1005,11 @@ export function groupSidebarThreadsByProject<
     }
   }
   for (const thread of threads) {
-    folderByProject.get(`${thread.environmentId}:${thread.projectId}`)?.threads.push(thread);
+    const key = `${thread.environmentId}:${thread.organizationProjectId ?? thread.projectId}`;
+    // A deleted organizational folder must not hide an otherwise live chat.
+    (
+      folderByProject.get(key) ?? folderByProject.get(`${thread.environmentId}:${thread.projectId}`)
+    )?.threads.push(thread);
   }
   return folders.filter((folder) => folder.threads.length > 0 || keepEmpty(folder.group));
 }
@@ -1358,7 +1368,9 @@ export function sortLogicalProjectsForSidebar<
   const threadsByProjectKey = new Map<string, TThread[]>();
   for (const thread of threads) {
     if (thread.archivedAt !== null) continue;
-    const projectKey = groupKeyByProjectRef.get(`${thread.environmentId}\0${thread.projectId}`);
+    const projectKey = groupKeyByProjectRef.get(
+      `${thread.environmentId}\0${thread.organizationProjectId ?? thread.projectId}`,
+    );
     if (!projectKey) continue;
     const existing = threadsByProjectKey.get(projectKey);
     if (existing) {
@@ -1409,7 +1421,7 @@ export function sortScopedProjectsForSidebar<
     if (thread.archivedAt !== null) {
       continue;
     }
-    const key = scopedKey(thread.environmentId, thread.projectId);
+    const key = scopedKey(thread.environmentId, thread.organizationProjectId ?? thread.projectId);
     const existing = threadsByProject.get(key) ?? [];
     existing.push(thread);
     threadsByProject.set(key, existing);

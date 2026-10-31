@@ -1,7 +1,7 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { ChevronDownIcon, PinIcon, SquarePenIcon } from "lucide-react";
-import { memo } from "react";
+import { memo, useState } from "react";
 
 import { cn } from "~/lib/utils";
 import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
@@ -39,6 +39,8 @@ export function sidebarFolderRowId(
  * closed folder still says when a hidden thread needs you.
  */
 export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHeader(props: {
+  canDropThread?: boolean;
+  onDropThread?: (group: SidebarProjectSnapshot) => void;
   group: SidebarProjectSnapshot;
   collapsed: boolean;
   hiddenThreads: readonly EnvironmentThreadShell[];
@@ -47,6 +49,7 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
   onContextMenu: (group: SidebarProjectSnapshot, position: { x: number; y: number }) => void;
 }) {
   const { group, collapsed, hiddenThreads } = props;
+  const [dragOver, setDragOver] = useState(false);
   const rowId = sidebarFolderRowId(group);
   const localLastVisitedAtById = useUiStateStore((state) => state.threadLastVisitedAtById);
   const dot = collapsed
@@ -65,7 +68,25 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
   return (
     <li
       data-testid="sidebar-project-folder"
-      className="group/project-folder relative mt-2 list-none first:mt-0"
+      className={cn(
+        "group/project-folder relative mt-2 list-none first:mt-0",
+        dragOver && props.canDropThread && "rounded-md ring-2 ring-primary",
+      )}
+      onDragOver={(event) => {
+        if (props.canDropThread) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+          setDragOver(true);
+        }
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(event) => {
+        setDragOver(false);
+        if (props.canDropThread) {
+          event.preventDefault();
+          props.onDropThread?.(group);
+        }
+      }}
     >
       <button
         type="button"

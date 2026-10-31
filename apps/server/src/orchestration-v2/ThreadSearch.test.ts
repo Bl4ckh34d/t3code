@@ -63,6 +63,7 @@ const thread = (
   threadId: ThreadId,
   projectId: ProjectId,
   overrides: {
+    readonly organizationProjectId?: ProjectId;
     readonly archivedAt?: DateTime.Utc;
     readonly deletedAt?: DateTime.Utc;
     readonly subagentOf?: ThreadId;
@@ -83,6 +84,9 @@ const thread = (
     creationSource: "web",
     id: threadId,
     projectId,
+    ...(overrides.organizationProjectId
+      ? { organizationProjectId: overrides.organizationProjectId }
+      : {}),
     title: overrides.title ?? threadId,
     providerInstanceId,
     modelSelection: { instanceId: providerInstanceId, model: "gpt-5" },
@@ -1040,7 +1044,10 @@ it.layer(layerTest)("ThreadSearch.searchThreads", (it) => {
       yield* Effect.forEach(
         [
           thread(midWord, project, { title: "Fix oauth redirect" }),
-          thread(wordStart, project, { title: "Clean up auth tokens" }),
+          thread(wordStart, otherProject, {
+            title: "Clean up auth tokens",
+            organizationProjectId: project,
+          }),
           thread(messageOnly, project, { title: "Unrelated" }),
           message(messageOnly, "message-only", "user", "the auth flow broke again"),
           thread(elsewhere, otherProject, { title: "Auth everywhere" }),

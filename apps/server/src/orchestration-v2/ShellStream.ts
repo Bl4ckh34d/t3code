@@ -74,7 +74,7 @@ function buildActiveShellSnapshot(input: {
 
 type ShellTrimRow = Pick<
   OrchestrationV2ThreadShell,
-  "id" | "projectId" | "lineage" | "settledOverride" | "settledAt"
+  "id" | "projectId" | "organizationProjectId" | "lineage" | "settledOverride" | "settledAt"
 >;
 
 /**
@@ -114,7 +114,8 @@ function shellTrimFacts(rows: ReadonlyArray<ShellTrimRow>): ShellTrimFacts {
   if (olderSettledBeforeMs !== undefined) {
     for (const row of rows) {
       if (isOlderSettledThreadShell(row, olderSettledBeforeMs)) {
-        counts.set(row.projectId, (counts.get(row.projectId) ?? 0) + 1);
+        const projectId = row.organizationProjectId ?? row.projectId;
+        counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
       }
     }
   }

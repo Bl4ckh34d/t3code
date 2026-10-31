@@ -406,7 +406,14 @@ export interface ShellSnapshotOptions {
 /** What a shell subscriber's trims read from an active thread, without building its shell. */
 export interface ActiveShellIndexEntry extends Pick<
   OrchestrationV2ThreadShell,
-  "id" | "projectId" | "lineage" | "settledOverride" | "settledAt" | "pinnedAt" | "snoozedUntil"
+  | "id"
+  | "projectId"
+  | "organizationProjectId"
+  | "lineage"
+  | "settledOverride"
+  | "settledAt"
+  | "pinnedAt"
+  | "snoozedUntil"
 > {
   /** False only when no run, request, work item, or watch can make the shell live. */
   readonly mayBeLive: boolean;
@@ -1490,6 +1497,7 @@ export function threadShellFromProjection(
     creationSource: projection.thread.creationSource,
     id: projection.thread.id,
     projectId: projection.thread.projectId,
+    organizationProjectId: projection.thread.organizationProjectId,
     title: projection.thread.title,
     providerInstanceId: projection.thread.providerInstanceId,
     modelSelection: projection.thread.modelSelection,
@@ -6763,6 +6771,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       const rows = yield* sql<{
         readonly thread_id: string;
         readonly project_id: string;
+        readonly organization_project_id: string | null;
         readonly relationship_to_parent: string | null;
         readonly parent_thread_id: string | null;
         readonly root_thread_id: string;
@@ -6776,6 +6785,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         SELECT
           t.thread_id,
           t.project_id,
+          json_extract(t.payload_json, '$.organizationProjectId') AS organization_project_id,
           json_extract(t.payload_json, '$.lineage.relationshipToParent') AS relationship_to_parent,
           json_extract(t.payload_json, '$.lineage.parentThreadId') AS parent_thread_id,
           json_extract(t.payload_json, '$.lineage.rootThreadId') AS root_thread_id,
@@ -6826,6 +6836,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       return rows.map((row): ActiveShellIndexEntry => ({
         id: ThreadId.make(row.thread_id),
         projectId: ProjectId.make(row.project_id),
+        ...(row.organization_project_id === null
+          ? {}
+          : { organizationProjectId: ProjectId.make(row.organization_project_id) }),
         lineage: {
           parentThreadId:
             row.parent_thread_id === null ? null : ThreadId.make(row.parent_thread_id),
@@ -6864,7 +6877,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     )(function* ({ before, projectIds, limit }) {
       // ISO strings in one format, so string order is time order.
       const older = sql`
-        SELECT t.thread_id, t.project_id,
+        SELECT t.thread_id, COALESCE(json_extract(t.payload_json, '$.organizationProjectId'), t.project_id) AS project_id,
           json_extract(t.payload_json, '$.settledAt') AS settled_at
         FROM orchestration_v2_projection_threads t
         WHERE t.deleted_at IS NULL
@@ -6873,7 +6886,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           AND json_extract(t.payload_json, '$.lineage.sideChat') IS NOT 1
           AND json_extract(t.payload_json, '$.settledOverride') = 'settled'
           AND json_extract(t.payload_json, '$.settledAt') IS NOT NULL${
-            projectIds === undefined ? sql`` : sql` AND t.project_id IN ${sql.in(projectIds)}`
+            projectIds === undefined
+              ? sql``
+              : sql` AND COALESCE(json_extract(t.payload_json, '$.organizationProjectId'), t.project_id) IN ${sql.in(projectIds)}`
           }
       `;
       const belowCursor =
