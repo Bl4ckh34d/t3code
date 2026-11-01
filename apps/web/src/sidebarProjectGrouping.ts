@@ -66,10 +66,9 @@ export function splitSidebarProjectGroupsByEnvironment(
       pinned: members.some((member) => member.pinnedAt != null),
       archived: members.every((member) => member.archivedAt != null),
       memberProjects: members,
-      memberProjectRefs: members.map((member) => ({
-        environmentId: member.environmentId,
-        projectId: member.id,
-      })),
+      memberProjectRefs: group.memberProjectRefs.filter(
+        (ref) => ref.environmentId === members[0]!.environmentId,
+      ),
       groupedProjectCount: members.length,
     }));
   });

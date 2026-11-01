@@ -30,13 +30,19 @@ it("keeps an older project's chats visible beyond another project's ten recent s
     id: ProjectId.make(title),
     environmentId,
     title,
-    workspaceRoot: `/isolated/${title}`,
+    workspaceRoot: title === "Older project" ? "C:\\isolated\\Older project" : `/isolated/${title}`,
     repositoryIdentity: null,
     defaultModelSelection: { instanceId, model: "test" },
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     scripts: [],
   }));
+  projects.push({
+    ...projects[1]!,
+    id: ProjectId.make("older-case-alias"),
+    workspaceRoot: "c:\\isolated\\Older project",
+    updatedAt: "2027-01-01T00:00:00.000Z",
+  });
   const threads = Array.from({ length: 14 }, (_, index) =>
     makeThreadFixture({
       environmentId,

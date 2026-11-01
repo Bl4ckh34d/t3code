@@ -49,7 +49,14 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 
 describe("environment grouping", () => {
   it("keeps machine folders scoped while preserving logical project settings and empty projects", () => {
-    const local = makeProject({ repositoryIdentity });
+    const local = makeProject({ repositoryIdentity, workspaceRoot: "C:\\shared-repo" });
+    const alias = makeProject({
+      id: ProjectId.make("older-case-alias"),
+      repositoryIdentity,
+      workspaceRoot: "c:\\shared-repo",
+      createdAt: "2025-01-01T00:00:00.000Z",
+      updatedAt: "2025-01-01T00:00:00.000Z",
+    });
     const remote = makeProject({
       id: ProjectId.make("remote-project"),
       environmentId: remoteEnvironmentId,
@@ -58,19 +65,23 @@ describe("environment grouping", () => {
     });
     const empty = makeProject({ id: ProjectId.make("empty"), workspaceRoot: "/empty" });
     const groups = buildSidebarProjectSnapshots({
-      projects: [local, remote, empty],
+      projects: [local, alias, remote, empty],
       settings: defaultGroupingSettings,
       primaryEnvironmentId,
       resolveEnvironmentLabel: () => null,
     });
     const folders = splitSidebarProjectGroupsByEnvironment(groups);
     expect(folders.map((group) => [group.environmentId, group.id, group.workspaceRoot])).toEqual([
-      [primaryEnvironmentId, local.id, "/tmp/shared-repo"],
+      [primaryEnvironmentId, local.id, "C:\\shared-repo"],
       [remoteEnvironmentId, remote.id, "/srv/shared-repo"],
       [primaryEnvironmentId, empty.id, "/empty"],
     ]);
     expect(folders[0]?.projectKey).toBe(groups[0]?.projectKey);
     expect(folders[1]?.projectKey).toBe(groups[0]?.projectKey);
+    expect(folders[0]?.memberProjectRefs).toEqual([
+      { environmentId: primaryEnvironmentId, projectId: local.id },
+      { environmentId: primaryEnvironmentId, projectId: alias.id },
+    ]);
     expect(folders[1]?.memberProjectRefs).toEqual([
       { environmentId: remoteEnvironmentId, projectId: remote.id },
     ]);
