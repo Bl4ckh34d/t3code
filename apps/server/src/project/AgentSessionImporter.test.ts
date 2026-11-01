@@ -41,6 +41,7 @@ import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as ServerConfig from "../config.ts";
 import { readCodexThreadOwners, pullCodexMembership } from "./CodexProjectMembership.ts";
+import { desktopBridge } from "./CodexDesktopBridge.ts";
 
 const projectId = ProjectId.make("agent-session-import-project");
 const timestamp = "2026-09-01T10:00:00.000Z";
@@ -92,6 +93,133 @@ function candidate(
 }
 
 const PI_MODEL_SELECTION = { instanceId: ProviderInstanceId.make("pi"), model: "default" };
+
+it.effect(
+  "uses the connected Codex desktop's project context while native migration is incomplete",
+  () =>
+    Effect.gen(function* () {
+      const source = candidate(CODEX_MODEL_SELECTION, "current-live-chat");
+      const importer = yield* makeImporter([source]);
+      yield* importer.run;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const target = ProjectId.make("desktop-project");
+      const writes: unknown[] = [];
+      const desktop = desktopBridge((method) =>
+        Effect.succeed(
+          method === "tools/list"
+            ? { tools: [{ name: "list_threads", namespace: "codex_app" }] }
+            : {
+                success: true,
+                contentItems: [
+                  {
+                    text: JSON.stringify({
+                      threads: [{ id: "current-live-chat", projectId: "legacy", hostId: "local" }],
+                      nextCursor: null,
+                    }),
+                  },
+                ],
+              },
+        ),
+      );
+      const project = {
+        id: target,
+        title: "Desktop project",
+        workspaceRoot: "/repo",
+        scripts: [],
+        defaultModelSelection: null,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        deletedAt: null,
+      };
+      for (const remote of [false, true]) {
+        writes.length = 0;
+        yield* pullCodexMembership(
+          CODEX_MODEL_SELECTION.instanceId,
+          {
+            request: (method, params) =>
+              Effect.succeed(
+                method === "project/list"
+                  ? {
+                      data: remote
+                        ? []
+                        : [
+                            {
+                              id: "native-project",
+                              name: project.title,
+                              roots: [{ path: "/repo" }],
+                              metadata: { "t3code.projectId": target },
+                            },
+                          ],
+                    }
+                  : {
+                      data: (params as { archived?: boolean }).archived
+                        ? []
+                        : [{ id: "current-live-chat", projectId: null, name: "Current chat" }],
+                    },
+              ),
+          },
+          {
+            "app-server-project-id-by-legacy-project-id-by-host": {
+              "local:/codex": { legacy: "native-project" },
+            },
+            "local-projects": { legacy: { name: project.title, rootPaths: ["/repo"] } },
+          },
+          "/codex",
+          remote ? undefined : desktop,
+          remote
+            ? {
+                providerInstanceId: CODEX_MODEL_SELECTION.instanceId,
+                hostId: "ssh:server",
+                label: "Server",
+                sshAlias: "server",
+                projects: [
+                  { id: "remote-project", title: "Remote Codex project", workspaceRoot: "/repo" },
+                ],
+                assignments: [{ threadId: "current-live-chat", projectId: "remote-project" }],
+              }
+            : undefined,
+        ).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              ServerConfig.layerTest("/repo", { prefix: "t3-desktop-context-" }).pipe(
+                Layer.provideMerge(NodeServices.layer),
+              ),
+              Layer.mock(ProjectService.ProjectService)({
+                getById: () => Effect.succeedSome(project),
+                update: () => Effect.succeed(project),
+                bootstrap: (input) =>
+                  Effect.succeed({ project: { ...project, id: input.projectId }, created: true }),
+              }),
+              Layer.mock(Orchestrator.OrchestratorV2)({
+                getThreadRecords: (id, fields) =>
+                  projections
+                    .getThreadRecords(id, fields)
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new Orchestrator.OrchestratorProjectionError({ threadId: id, cause }),
+                      ),
+                    ),
+                dispatch: (input) =>
+                  Effect.sync(() => {
+                    writes.push(input);
+                    return { sequence: 1, storedEvents: [] };
+                  }),
+              }),
+            ),
+          ),
+        );
+        expect(writes).toMatchObject([
+          {
+            type: "thread.metadata.update",
+            organizationProjectId: remote
+              ? ProjectId.make("codex-project:codex:remote-project")
+              : target,
+          },
+        ]);
+      }
+    }).pipe(Effect.scoped, Effect.provide(persistence)),
+);
 
 it.effect("pulls Codex desktop names and order without writing to Codex", () =>
   Effect.gen(function* () {
@@ -460,8 +588,94 @@ const makeImporter = Effect.fn(function* (
     ),
   );
   const importer = Context.get(context, AgentSessionImporter.AgentSessionImporter);
-  return { run: importer.importRecentAgentThreads({ projectId }), published };
+  return {
+    run: importer.importRecentAgentThreads({ projectId }),
+    published,
+    importNative: (source: ReturnType<typeof candidate>, target: ThreadId) =>
+      importer.importRecentAgentThreads({ projectId }, false, [source], target),
+  };
 });
+
+it.effect("keeps both native histories when a T3 chat continues under a new Codex ID", () =>
+  Effect.gen(function* () {
+    const original = candidate(CODEX_MODEL_SELECTION, "original");
+    yield* (yield* makeImporter([original])).run;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const records = yield* projections.getThreadRecords(importId(original), ["providerThreads"]);
+    const provider = records.providerThreads[0]!;
+    yield* (yield* EventSink.EventSinkV2).write({
+      events: [
+        {
+          id: EventId.make("continued-native-id"),
+          type: "provider-thread.updated",
+          threadId: records.thread.id,
+          occurredAt: now,
+          payload: {
+            ...provider,
+            nativeThreadRef: {
+              driver: ProviderDriverKind.make("codex"),
+              nativeId: "continued",
+              strength: "strong",
+            },
+          },
+        },
+      ],
+    });
+    const target = (id: string) =>
+      AgentSessionImporter.codexHistoryTarget(CODEX_MODEL_SELECTION.instanceId, id).pipe(
+        Effect.provide(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadRecords: (threadId, fields) =>
+              projections
+                .getThreadRecords(threadId, fields)
+                .pipe(
+                  Effect.mapError(
+                    (cause) => new Orchestrator.OrchestratorProjectionError({ threadId, cause }),
+                  ),
+                ),
+          }),
+        ),
+      );
+    expect(yield* target("continued")).toBe(records.thread.id);
+    const originalTarget = yield* target("original");
+    expect(originalTarget).not.toBe(records.thread.id);
+    const importer = yield* makeImporter([]);
+    const continued = {
+      ...candidate(CODEX_MODEL_SELECTION, "continued"),
+      thread: {
+        ...original.thread,
+        providerSessionId: "continued",
+        archived: true,
+        messages: [{ role: "user" as const, text: "Continued history", createdAt: timestamp }],
+      },
+    };
+    for (let repeat = 0; repeat < 2; repeat++) {
+      expect(yield* importer.importNative(original, yield* target("original"))).toMatchObject({
+        importedCount: 1,
+        skippedCount: 0,
+      });
+      expect(yield* importer.importNative(continued, yield* target("continued"))).toMatchObject({
+        importedCount: 1,
+        skippedCount: 0,
+      });
+      expect(yield* target("original")).toBe(originalTarget);
+      const a = yield* projections.getThreadRecords(originalTarget, [
+        "messages",
+        "providerThreads",
+      ]);
+      const b = yield* projections.getThreadRecords(records.thread.id, [
+        "messages",
+        "providerThreads",
+      ]);
+      expect(a.thread.archivedAt).toBeNull();
+      expect(b.thread.archivedAt).not.toBeNull();
+      expect(a.messages.map((message) => message.text)).toEqual(["Fix it", "Fixed"]);
+      expect(b.messages.map((message) => message.text)).toContain("Continued history");
+      expect(a.providerThreads[0]?.nativeThreadRef?.nativeId).toBe("original");
+      expect(b.providerThreads[0]?.nativeThreadRef?.nativeId).toBe("continued");
+    }
+  }).pipe(Effect.scoped, Effect.provide(persistence)),
+);
 
 it.effect(
   "ignores owned sessions, including archived and deleted threads, but imports other instances and unowned sessions",

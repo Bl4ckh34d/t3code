@@ -5,12 +5,19 @@ import { isDesktopRuntimeExternalDependency } from "../../scripts/lib/desktop-ex
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
 const repoEnv = loadRepoEnv();
+const cliReleaseRepository = (
+  repoEnv.T3CODE_DESKTOP_UPDATE_REPOSITORY || repoEnv.GITHUB_REPOSITORY
+)?.trim();
 
 // Install only bundle externals; the server bundle already carries its dependency tree.
 const isMainProcessExternal = (id: string) =>
   id === "electron" || id.startsWith("electron/") || isDesktopRuntimeExternalDependency(id);
 const shouldLaunchElectronAfterPack = process.env.T3CODE_DESKTOP_DEV === "1";
 const publicConfigDefine = {
+  __T3CODE_BUILD_CLI_RELEASE_BASE_URL__: JSON.stringify(
+    repoEnv.T3CODE_RELEASE_BASE_URL?.trim() ||
+      (cliReleaseRepository ? `https://github.com/${cliReleaseRepository}/releases/download` : ""),
+  ),
   __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
     repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
   ),

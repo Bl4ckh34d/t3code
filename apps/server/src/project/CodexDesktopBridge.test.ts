@@ -60,6 +60,17 @@ it.effect("waits for desktop acknowledgement and rejects unsuccessful tool resul
         .pipe(Effect.match({ onSuccess: () => null, onFailure: (error) => error.message })),
     ).toBe("Codex desktop rejected the change: Rename rejected. T3 was not updated.");
     expect(calls).toHaveLength(2);
+    const readResult = { success: true, contentItems: [{ text: '{"threads":[]}' }] };
+    const reading = desktopBridge((method) =>
+      Effect.succeed(
+        method === "tools/list"
+          ? { tools: [{ name: "list_threads", namespace: "codex_app" }] }
+          : readResult,
+      ),
+    );
+    expect(yield* reading.read("list_threads", "native-thread", { mode: "history" })).toEqual(
+      readResult,
+    );
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 

@@ -93,6 +93,36 @@ export const AgentSessionSidebarOrder = Schema.Struct({
   threadIds: Schema.Array(ThreadId),
 });
 
+export const CodexDesktopHistoryContext = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  hostId: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  sshAlias: Schema.NullOr(TrimmedNonEmptyString),
+  projects: Schema.Array(
+    Schema.Struct({
+      id: TrimmedNonEmptyString,
+      title: TrimmedNonEmptyString,
+      workspaceRoot: TrimmedNonEmptyString,
+    }),
+  ),
+  assignments: Schema.Array(
+    Schema.Struct({
+      threadId: TrimmedNonEmptyString,
+      projectId: Schema.NullOr(TrimmedNonEmptyString),
+    }),
+  ),
+});
+export type CodexDesktopHistoryContext = typeof CodexDesktopHistoryContext.Type;
+
+export const AgentSessionDesktopSourcesResult = Schema.Struct({
+  sources: Schema.Array(CodexDesktopHistoryContext),
+});
+
+export const AgentSessionSyncInput = Schema.Struct({
+  desktopContexts: Schema.optionalKey(Schema.Array(CodexDesktopHistoryContext)),
+});
+export type AgentSessionSyncInput = typeof AgentSessionSyncInput.Type;
+
 export const AgentSessionSyncResult = Schema.Struct({
   sidebarOrder: Schema.optional(AgentSessionSidebarOrder),
   membershipErrorCount: NonNegativeInt,

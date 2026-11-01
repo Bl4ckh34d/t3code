@@ -989,8 +989,8 @@ export function resolveSidebarProviderFolders<
     )
     .toSorted(
       (left, right) =>
-        Number(right.group.id === "codex-unassigned-history") -
-        Number(left.group.id === "codex-unassigned-history"),
+        Number(left.group.id === "codex-unassigned-history") -
+        Number(right.group.id === "codex-unassigned-history"),
     );
 }
 

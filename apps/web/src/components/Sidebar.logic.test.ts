@@ -1620,16 +1620,16 @@ describe("sidebarFolderExpansionKeys", () => {
 });
 
 describe("groupSidebarThreadsByProject", () => {
-  it("puts unassigned Codex chats in Letzte before project folders without reordering the projects", () => {
+  it("puts unassigned Codex chats in Letzte after project folders without reordering the projects", () => {
     const folders = ["b", "codex-unassigned-history", "a"].map((id) => ({
       group: { id, displayName: id },
       threads: [id],
     }));
     const result = resolveSidebarProviderFolders(folders, "codex");
     expect(result.map((folder) => [folder.group.displayName, ...folder.threads])).toEqual([
-      ["Letzte", "codex-unassigned-history"],
       ["b", "b"],
       ["a", "a"],
+      ["Letzte", "codex-unassigned-history"],
     ]);
     expect(resolveSidebarProviderFolders(folders, "claudeAgent")).toBe(folders);
     expect(folders[1]?.group.displayName).toBe("codex-unassigned-history");

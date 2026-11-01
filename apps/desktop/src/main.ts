@@ -22,6 +22,8 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import type { RemoteT3RunnerOptions } from "@t3tools/ssh/tunnel";
 import serverPackageJson from "../../server/package.json" with { type: "json" };
 
+declare const __T3CODE_BUILD_CLI_RELEASE_BASE_URL__: string | undefined;
+
 import * as DesktopIpc from "./ipc/DesktopIpc.ts";
 import * as ElectronApp from "./electron/ElectronApp.ts";
 import * as ElectronDialog from "./electron/ElectronDialog.ts";
@@ -113,7 +115,13 @@ const resolveDesktopSshCliRunner = (
       nodeEngineRange: serverPackageJson.engines.node,
     };
   }
-  return { archiveVersion: environment.appVersion };
+  return {
+    archiveVersion: environment.appVersion,
+    ...(typeof __T3CODE_BUILD_CLI_RELEASE_BASE_URL__ !== "undefined" &&
+    __T3CODE_BUILD_CLI_RELEASE_BASE_URL__
+      ? { releaseBaseUrl: __T3CODE_BUILD_CLI_RELEASE_BASE_URL__ }
+      : {}),
+  };
 };
 
 const layerDesktopSshEnvironment = Layer.unwrap(

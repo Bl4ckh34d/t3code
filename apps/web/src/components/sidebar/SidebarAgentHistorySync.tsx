@@ -2,7 +2,12 @@ import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import { RefreshCwIcon } from "lucide-react";
 import { useContext, useRef, useState } from "react";
 
-import { agentSessionSync } from "../../state/agentSessions";
+import { agentSessionDesktopSources, agentSessionSync } from "../../state/agentSessions";
+import { connectSshEnvironment as connectSshEnvironmentCommand } from "../../connection/onboarding";
+import { environmentCatalog } from "../../connection/catalog";
+import { discoverCodexHistoryTargets } from "./codexHistoryTargets";
+import * as Option from "effect/Option";
+import * as Cause from "effect/Cause";
 import { Atom } from "effect/reactivity";
 import { environmentSummaries } from "../../state/presentation";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -26,24 +31,68 @@ export function SidebarAgentHistorySync() {
   const allowed = environmentIds.length > 0;
   const registry = useContext(RegistryContext);
   const sync = useAtomCommand(agentSessionSync);
+  const discoverSources = useAtomCommand(agentSessionDesktopSources, { reportFailure: false });
+  const connectSsh = useAtomCommand(connectSshEnvironmentCommand, { reportFailure: false });
   const inFlight = useRef(false);
   const [pending, setPending] = useState(false);
   const [, setCodexOrders] = useCodexSidebarOrders();
   const run = async () => {
-    const targets = registry.get(syncableEnvironmentsAtom);
-    if (targets.length === 0 || inFlight.current) return;
+    const initialTargets = registry.get(syncableEnvironmentsAtom);
+    if (initialTargets.length === 0 || inFlight.current) return;
     inFlight.current = true;
     setPending(true);
     try {
+      const findSsh = (alias: string) =>
+        [...registry.get(environmentCatalog.catalogValueAtom).entries].find(
+          ([, entry]) =>
+            Option.isSome(entry.profile) &&
+            entry.profile.value._tag === "SshConnectionProfile" &&
+            (entry.profile.value.target.alias === alias ||
+              entry.profile.value.target.hostname === alias),
+        )?.[0];
+      const discovery = await discoverCodexHistoryTargets({
+        environmentIds: initialTargets,
+        discover: async (environmentId) => {
+          const result = await discoverSources({ environmentId, input: {} });
+          if (result._tag !== "Success") throw Cause.squash(result.cause);
+          return result.value.sources;
+        },
+        connectSsh: async (alias, label) => {
+          const existing = findSsh(alias);
+          if (
+            existing &&
+            registry.get(environmentSummaries.connectedEnvironmentIdsAtom).includes(existing)
+          )
+            return existing;
+          if (!window.desktopBridge)
+            throw new Error("Connect this Codex host through the T3 desktop app first.");
+          const target = await window.desktopBridge.resolveSshHost(alias);
+          const connected = await connectSsh({ target, label });
+          if (connected._tag !== "Success") throw Cause.squash(connected.cause);
+          const environmentId = findSsh(alias);
+          if (!environmentId)
+            throw new Error("The SSH connection did not register its T3 environment.");
+          return environmentId;
+        },
+      });
+      const targets = [...discovery.targets.keys()];
       const results = await Promise.allSettled(
-        targets.map((environmentId) => sync({ environmentId, input: {} })),
+        targets.map((environmentId) =>
+          sync({
+            environmentId,
+            input: { desktopContexts: discovery.targets.get(environmentId) ?? [] },
+          }),
+        ),
       );
       let importedCount = 0;
       let skippedCount = 0;
       let unlinkedProjectCount = 0;
       let membershipErrorCount = 0;
       let failedConnections =
-        registry.get(environmentSummaries.connectedEnvironmentIdsAtom).length - targets.length;
+        Math.max(
+          0,
+          registry.get(environmentSummaries.connectedEnvironmentIdsAtom).length - targets.length,
+        ) + discovery.failures.length;
       let truncated = false;
       for (const [index, result] of results.entries()) {
         if (result.status !== "fulfilled" || result.value._tag !== "Success") {
@@ -78,7 +127,15 @@ export function SidebarAgentHistorySync() {
         stackedThreadToast({
           type: incomplete ? "warning" : "success",
           title: incomplete ? "History sync needs attention" : "Agent history synchronized",
-          description: `${targets.length} connected machines checked; ${failedConnections} connections could not sync. Servers need the current T3 version. ${importedCount} chats checked. ${skippedCount} skipped; ${unlinkedProjectCount} source folders need a linked project. ${membershipErrorCount} Codex connections could not synchronize project membership.${truncated ? " Discovery reached its limit." : ""}${skippedCount > 0 ? " Sync again to continue; persistent skips need inspection." : ""}`,
+          description: `${targets.length} connected machines checked; ${failedConnections} connections could not sync. Servers need the current T3 version. ${importedCount} chats checked. ${skippedCount} skipped; ${unlinkedProjectCount} source folders need a linked project. ${membershipErrorCount} Codex connections could not synchronize project membership.${truncated ? " Discovery reached its limit." : ""}${skippedCount > 0 ? " Sync again to continue; persistent skips need inspection." : ""}${discovery.failures.length > 0 ? ` ${discovery.failures.join(" ")}` : ""}`,
+        }),
+      );
+    } catch (error) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "History sync failed",
+          description: error instanceof Error ? error.message : String(error),
         }),
       );
     } finally {

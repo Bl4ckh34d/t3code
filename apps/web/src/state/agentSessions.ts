@@ -23,6 +23,11 @@ export const agentSessionSync = createEnvironmentRpcCommand(connectionAtomRuntim
   tag: WS_METHODS.agentSessionsSync,
 });
 
+export const agentSessionDesktopSources = createEnvironmentRpcCommand(connectionAtomRuntime, {
+  label: "environment-data:agent-sessions:desktop-sources",
+  tag: WS_METHODS.agentSessionsDesktopSources,
+});
+
 export const agentSessionOrganize = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "environment-data:agent-sessions:organize",
   tag: WS_METHODS.agentSessionsOrganize,

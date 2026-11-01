@@ -157,6 +157,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.agentSessionsScan]: AuthOrchestrationReadScope,
   [WS_METHODS.agentSessionsImport]: AuthOrchestrationOperateScope,
   [WS_METHODS.agentSessionsSync]: AuthOrchestrationOperateScope,
+  [WS_METHODS.agentSessionsDesktopSources]: AuthOrchestrationReadScope,
   [WS_METHODS.agentSessionsMove]: AuthOrchestrationOperateScope,
   [WS_METHODS.agentSessionsOrganize]: AuthOrchestrationOperateScope,
   [WS_METHODS.assetsCreateUrl]: AuthOrchestrationReadScope,

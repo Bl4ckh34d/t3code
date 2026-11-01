@@ -107,38 +107,41 @@ export const synchronizeCodexHistory = Effect.fn("synchronizeCodexHistory")(func
   const { client } = yield* connect(instanceId);
   let skipped = 0;
   const imported = new Set<string>();
-  for (const archived of [false, true]) {
-    const seen = new Set<string>();
-    let cursor: string | undefined;
-    do {
-      const page = yield* decodeThreadPage(
-        yield* request(client.raw, "thread/list", {
-          archived,
-          ...CODEX_SYNC_THREAD_LIST_PARAMS,
-          ...(cursor ? { cursor } : {}),
-        }),
-      );
-      for (const thread of page.data) {
-        if (imported.has(thread.id)) continue;
-        imported.add(thread.id);
-        yield* readCodexConversation(client.raw, thread.id, thread.createdAt).pipe(
-          Effect.flatMap((messages) => importThread({ ...thread, archived }, messages)),
-          Effect.catch((cause) =>
-            Effect.logWarning("Codex history import failed", { threadId: thread.id, cause }).pipe(
-              Effect.tap(
-                Effect.sync(() => {
-                  skipped++;
-                }),
+  for (const useStateDbOnly of [false, true]) {
+    for (const archived of [false, true]) {
+      const seen = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const page = yield* decodeThreadPage(
+          yield* request(client.raw, "thread/list", {
+            archived,
+            ...CODEX_SYNC_THREAD_LIST_PARAMS,
+            useStateDbOnly,
+            ...(cursor ? { cursor } : {}),
+          }),
+        );
+        for (const thread of page.data) {
+          if (imported.has(thread.id)) continue;
+          imported.add(thread.id);
+          yield* readCodexConversation(client.raw, thread.id, thread.createdAt).pipe(
+            Effect.flatMap((messages) => importThread({ ...thread, archived }, messages)),
+            Effect.catch((cause) =>
+              Effect.logWarning("Codex history import failed", { threadId: thread.id, cause }).pipe(
+                Effect.tap(
+                  Effect.sync(() => {
+                    skipped++;
+                  }),
+                ),
               ),
             ),
-          ),
-        );
-      }
-      cursor = page.nextCursor ?? undefined;
-      if (cursor && seen.has(cursor))
-        return yield* new HistoryError({ message: "Codex repeated a history cursor." });
-      if (cursor) seen.add(cursor);
-    } while (cursor);
+          );
+        }
+        cursor = page.nextCursor ?? undefined;
+        if (cursor && seen.has(cursor))
+          return yield* new HistoryError({ message: "Codex repeated a history cursor." });
+        if (cursor) seen.add(cursor);
+      } while (cursor);
+    }
   }
   return skipped;
 });

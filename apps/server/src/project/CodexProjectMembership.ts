@@ -6,6 +6,7 @@ import {
   ProviderInstanceId,
   ThreadId,
   type AgentSessionOrganizeInput,
+  type CodexDesktopHistoryContext,
 } from "@t3tools/contracts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -60,6 +61,20 @@ const ThreadPage = Schema.Struct({
   nextCursor: Schema.optional(Schema.NullOr(Schema.String)),
 });
 const decodeThreadPage = Schema.decodeUnknownEffect(ThreadPage);
+const DesktopThreadPage = Schema.Struct({
+  threads: Schema.Array(
+    Schema.Struct({
+      id: Schema.optionalKey(Schema.String),
+      threadId: Schema.optionalKey(Schema.String),
+      projectId: Schema.NullOr(Schema.String),
+      hostId: Schema.optionalKey(Schema.String),
+    }),
+  ),
+  nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
+});
+const decodeDesktopThreadPage = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(DesktopThreadPage),
+);
 // Codex defaults to interactive sources, which omits historical exec chats.
 const CODEX_SYNC_THREAD_SOURCES = ["cli", "vscode", "exec", "appServer", "unknown"] as const;
 export const CODEX_SYNC_THREAD_LIST_PARAMS = {
@@ -182,6 +197,7 @@ export function codexDesktopSidebar(state: unknown, homePath: string) {
   const threadIds: string[] = [];
   const projectThreadIds = new Map<string, readonly string[]>();
   const threadProjectIds = new Map<string, string>();
+  const nativeProjectIds = new Map<string, string>();
   const decoded = decodeDesktopSidebar(state);
   if (Option.isSome(decoded)) {
     const data = decoded.value;
@@ -194,6 +210,7 @@ export function codexDesktopSidebar(state: unknown, homePath: string) {
     const mapping = host
       ? (data["app-server-project-id-by-legacy-project-id-by-host"][host] ?? {})
       : {};
+    for (const [legacy, native] of Object.entries(mapping)) nativeProjectIds.set(legacy, native);
     for (const [threadId, assignment] of Object.entries(data["thread-project-assignments"] ?? {})) {
       const project = mapping[assignment.projectId];
       if (assignment.projectKind === "local" && project) threadProjectIds.set(threadId, project);
@@ -218,6 +235,7 @@ export function codexDesktopSidebar(state: unknown, homePath: string) {
     threadIds: [...new Set(threadIds)],
     projectThreadIds,
     threadProjectIds,
+    nativeProjectIds,
   };
 }
 
@@ -282,12 +300,12 @@ export const connect = Effect.fn("CodexProjectMembership.connect")(function* (
     cwd: yield* HostProcess.HomeDirectory,
     environment,
   });
+  const desktopPipePath = config.desktopPipePath || environment.CODEX_APP_TOOLS_PIPE_PATH || "";
   return {
     ...connection,
     homePath: layout.sharedHomePath,
-    desktop: desktopBridge(
-      requestDesktopPipe(config.desktopPipePath || environment.CODEX_APP_TOOLS_PIPE_PATH || ""),
-    ),
+    desktopConfigured: desktopPipePath.length > 0,
+    desktop: desktopBridge(requestDesktopPipe(desktopPipePath)),
   };
 });
 
@@ -313,6 +331,8 @@ export const pullCodexMembership = Effect.fn("pullCodexMembership")(function* (
   raw: Pick<RawClient, "request">,
   desktopState: unknown,
   homePath: string,
+  desktop?: ReturnType<typeof desktopBridge>,
+  desktopContext?: CodexDesktopHistoryContext,
 ) {
   const crypto = yield* Crypto.Crypto;
   const pendingMembership = pendingCodexMembership(desktopState, homePath);
@@ -320,6 +340,28 @@ export const pullCodexMembership = Effect.fn("pullCodexMembership")(function* (
   const projects = yield* ProjectService.ProjectService;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const nativeProjects = yield* readCodexProjects(raw);
+  const contextProjectIds = new Map<string, string>();
+  for (const project of desktopContext?.projects ?? []) {
+    const nativeId = sidebar.nativeProjectIds.get(project.id) ?? project.id;
+    const existing =
+      nativeProjects.find((entry) => entry.id === nativeId) ??
+      nativeProjects.find((entry) =>
+        entry.roots.some(
+          (root) =>
+            normalizeProjectPathForComparison(root.path) ===
+            normalizeProjectPathForComparison(project.workspaceRoot),
+        ),
+      );
+    contextProjectIds.set(project.id, existing?.id ?? nativeId);
+    if (existing)
+      nativeProjects[nativeProjects.indexOf(existing)] = { ...existing, name: project.title };
+    else
+      nativeProjects.push({
+        id: nativeId,
+        name: project.title,
+        roots: [{ path: project.workspaceRoot }],
+      });
+  }
   const mapping = new Map<string, ProjectId>();
   let mappingErrors = 0;
   let desktopRefreshRequired = false;
@@ -394,67 +436,135 @@ export const pullCodexMembership = Effect.fn("pullCodexMembership")(function* (
     );
   }
   const owners = yield* readCodexThreadOwners(instanceId);
+  const desktopMembership = new Map<string, string | null>(
+    (desktopContext?.assignments ?? []).map((assignment) => [
+      assignment.threadId,
+      assignment.projectId === null
+        ? null
+        : (contextProjectIds.get(assignment.projectId) ?? assignment.projectId),
+    ]),
+  );
+  const caller = owners.keys().next().value;
+  if (desktop && desktopContext === undefined && caller !== undefined) {
+    for (const archived of [false, true]) {
+      let cursor: string | undefined;
+      const seen = new Set<string>();
+      do {
+        const result = yield* desktop.read("list_threads", caller, {
+          mode: "history",
+          source: "codex",
+          hostId: "local",
+          archived,
+          limit: 50,
+          ...(cursor ? { cursor } : {}),
+        });
+        const page = yield* decodeDesktopThreadPage(
+          result.contentItems?.find((item) => item.text !== undefined)?.text ?? "",
+        );
+        for (const thread of page.threads) {
+          const id = thread.id ?? thread.threadId;
+          if (id === undefined || (thread.hostId !== undefined && thread.hostId !== "local"))
+            continue;
+          const project =
+            thread.projectId === null
+              ? null
+              : (sidebar.nativeProjectIds.get(thread.projectId) ?? thread.projectId);
+          if (project !== null && !mapping.has(project))
+            return yield* new MembershipError({
+              message:
+                "A Codex desktop project has not migrated to native storage. Synchronization is incomplete.",
+            });
+          desktopMembership.set(id, project);
+        }
+        cursor = page.nextCursor ?? undefined;
+        if (cursor && seen.has(cursor))
+          return yield* new MembershipError({ message: "Codex desktop repeated a thread cursor." });
+        if (cursor) seen.add(cursor);
+      } while (cursor);
+    }
+  }
   const listedThreadIds: string[] = [];
   let updated = 0;
-  for (const archived of [false, true]) {
-    let cursor: string | undefined;
-    const seen = new Set<string>();
-    do {
-      const page = yield* decodeThreadPage(
-        yield* request(raw, "thread/list", {
-          ...CODEX_SYNC_THREAD_LIST_PARAMS,
-          archived,
-          sortKey: "updated_at",
-          ...(cursor ? { cursor } : {}),
-        }),
-      );
-      for (const native of page.data) {
-        if (
-          owners.has(native.id) &&
-          sidebar.threadProjectIds.has(native.id) &&
-          sidebar.threadProjectIds.get(native.id) !== native.projectId &&
-          !pendingMembership.has(native.id)
-        )
-          desktopRefreshRequired = true;
-        listedThreadIds.push(native.id);
-        let nativeProjectId = native.projectId;
-        const pendingProjectId = pendingMembership.get(native.id);
-        if (pendingProjectId !== undefined) {
-          nativeProjectId = pendingProjectId;
-        }
-        const target =
-          nativeProjectId === null
-            ? owners.has(native.id)
-              ? (yield* unassignedCodexProject()).id
-              : null
-            : mapping.get(nativeProjectId);
-        if (target === undefined) continue;
-        for (const threadId of owners.get(native.id) ?? []) {
-          const records = yield* Effect.option(orchestrator.getThreadRecords(threadId, []));
-          if (Option.isNone(records) || records.value.thread.deletedAt !== null) continue;
-          const title = incomingCodexTitle(records.value.thread.title, native.name);
+  const listed = new Set<string>();
+  for (const useStateDbOnly of [false, true]) {
+    for (const archived of [false, true]) {
+      let cursor: string | undefined;
+      const seen = new Set<string>();
+      do {
+        const page = yield* decodeThreadPage(
+          yield* request(raw, "thread/list", {
+            ...CODEX_SYNC_THREAD_LIST_PARAMS,
+            useStateDbOnly,
+            archived,
+            sortKey: "updated_at",
+            ...(cursor ? { cursor } : {}),
+          }),
+        );
+        for (const native of page.data) {
+          if (listed.has(native.id)) continue;
+          listed.add(native.id);
           if (
-            (records.value.thread.organizationProjectId ?? null) === target &&
-            records.value.thread.title === title
+            owners.has(native.id) &&
+            !desktopMembership.has(native.id) &&
+            sidebar.threadProjectIds.has(native.id) &&
+            sidebar.threadProjectIds.get(native.id) !== native.projectId &&
+            !pendingMembership.has(native.id)
           )
-            continue;
-          yield* orchestrator.dispatch({
-            type: "thread.metadata.update",
-            commandId: CommandId.make(`codex-membership:${yield* crypto.randomUUIDv4()}`),
-            threadId,
-            organizationProjectId: target,
-            expectedTitle: records.value.thread.title,
-            title,
-            codexSyncedTitle: title,
-          });
-          updated++;
+            desktopRefreshRequired = true;
+          listedThreadIds.push(native.id);
+          let nativeProjectId = native.projectId;
+          const pendingProjectId = desktopMembership.has(native.id)
+            ? desktopMembership.get(native.id)
+            : pendingMembership.get(native.id);
+          if (pendingProjectId !== undefined) {
+            nativeProjectId = pendingProjectId;
+          }
+          const target =
+            nativeProjectId === null
+              ? owners.has(native.id)
+                ? (yield* unassignedCodexProject()).id
+                : null
+              : mapping.get(nativeProjectId);
+          if (target === undefined) continue;
+          for (const threadId of owners.get(native.id) ?? []) {
+            const records = yield* Effect.option(orchestrator.getThreadRecords(threadId, []));
+            if (Option.isNone(records) || records.value.thread.deletedAt !== null) continue;
+            if (
+              desktopContext === undefined &&
+              desktop === undefined &&
+              mapping.size === 0 &&
+              nativeProjectId === null &&
+              records.value.thread.organizationProjectId != null &&
+              records.value.thread.organizationProjectId !== "codex-unassigned-history"
+            )
+              return yield* new MembershipError({
+                message:
+                  "Connect the original Codex desktop before synchronizing its project membership.",
+              });
+            const title = incomingCodexTitle(records.value.thread.title, native.name);
+            if (
+              (records.value.thread.organizationProjectId ?? null) === target &&
+              records.value.thread.title === title
+            )
+              continue;
+            yield* orchestrator.dispatch({
+              type: "thread.metadata.update",
+              commandId: CommandId.make(`codex-membership:${yield* crypto.randomUUIDv4()}`),
+              threadId,
+              organizationProjectId: target,
+              expectedTitle: records.value.thread.title,
+              title,
+              codexSyncedTitle: title,
+            });
+            updated++;
+          }
         }
-      }
-      cursor = page.nextCursor ?? undefined;
-      if (cursor && seen.has(cursor))
-        return yield* new MembershipError({ message: "Codex repeated a thread cursor." });
-      if (cursor) seen.add(cursor);
-    } while (cursor);
+        cursor = page.nextCursor ?? undefined;
+        if (cursor && seen.has(cursor))
+          return yield* new MembershipError({ message: "Codex repeated a thread cursor." });
+        if (cursor) seen.add(cursor);
+      } while (cursor);
+    }
   }
   if (mappingErrors > 0)
     return yield* new MembershipError({
@@ -478,13 +588,16 @@ export const pullCodexMembership = Effect.fn("pullCodexMembership")(function* (
 
 export const synchronizeCodexMembership = Effect.fn("synchronizeCodexMembership")(function* (
   instanceId: ProviderInstanceId,
+  desktopContext?: CodexDesktopHistoryContext,
 ) {
-  const { client, homePath } = yield* connect(instanceId);
+  const { client, homePath, desktop, desktopConfigured } = yield* connect(instanceId);
   const result = yield* pullCodexMembership(
     instanceId,
     client.raw,
     yield* readCodexDesktopState(homePath),
     homePath,
+    desktopConfigured ? desktop : undefined,
+    desktopContext,
   );
   if (result.desktopRefreshRequired)
     return yield* new MembershipError({

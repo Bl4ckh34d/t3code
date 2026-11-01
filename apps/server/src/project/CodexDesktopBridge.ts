@@ -70,7 +70,7 @@ export function desktopBridge(request: Request) {
       });
     return tool;
   });
-  const call = Effect.fn("CodexDesktopBridge.call")(function* (
+  const invoke = Effect.fn("CodexDesktopBridge.call")(function* (
     name: string,
     nativeThreadId: string,
     args: Record<string, unknown>,
@@ -121,8 +121,11 @@ export function desktopBridge(request: Request) {
           : "Codex desktop rejected the change. T3 was not updated.",
       });
     }
+    return result;
   });
-  return { requireTool, call };
+  const call = (name: string, nativeThreadId: string, args: Record<string, unknown>) =>
+    invoke(name, nativeThreadId, args).pipe(Effect.asVoid);
+  return { requireTool, call, read: invoke };
 }
 
 export const requestDesktopPipe = (pipePath: string): Request =>

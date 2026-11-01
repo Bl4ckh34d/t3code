@@ -33,6 +33,7 @@ it.effect(
           modelProviders?: string[];
           cursor?: string;
           threadId?: string;
+          useStateDbOnly?: boolean;
         };
         if (method === "thread/list") {
           const allProviders = params.modelProviders?.length === 0;
@@ -47,7 +48,13 @@ it.effect(
                     ],
                     nextCursor: null,
                   }
-                : { data: [thread("recent")], nextCursor: "older-page" },
+                : {
+                    data: [
+                      thread("recent"),
+                      ...(params.useStateDbOnly ? [thread("indexed-only")] : []),
+                    ],
+                    nextCursor: "older-page",
+                  },
           );
         }
         return Effect.succeed({
@@ -74,8 +81,8 @@ it.effect(
             archiveStates.push(source.archived);
           }),
       );
-      expect(imported).toEqual(["recent", "old-custom-provider", "archived-old"]);
-      expect(archiveStates).toEqual([false, false, true]);
+      expect(imported).toEqual(["recent", "old-custom-provider", "archived-old", "indexed-only"]);
+      expect(archiveStates).toEqual([false, false, true, false]);
       expect(skipped).toBe(0);
     }).pipe(
       Effect.provide(

@@ -130,10 +130,10 @@ const layerScannerTest = (input: ScannerTestInput) =>
     ),
   );
 
-const runScan = (input: ScannerTestInput) =>
+const runScan = (input: ScannerTestInput, forSync = false) =>
   Effect.gen(function* () {
     const scanner = yield* AgentSessionScanner.AgentSessionScanner;
-    return yield* scanner.scan;
+    return yield* forSync ? scanner.scanForSync : scanner.scan;
   }).pipe(Effect.provide(layerScannerTest(input)));
 
 const runRecentThreadOutcomes = (input: ScannerTestInput & { readonly workspaceRoot: string }) =>
@@ -380,6 +380,12 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
             git: null,
           },
         ]);
+        const syncScan = yield* runScan(
+          { claudeHomePath, codexHomePath, importedWorkspaceRoots: [workspace] },
+          true,
+        );
+        expect(syncScan.candidates).toMatchObject([{ sources: ["claudeAgent"], threadCount: 1 }]);
+        expect(syncScan.truncated).not.toBe(true);
       }),
     );
 

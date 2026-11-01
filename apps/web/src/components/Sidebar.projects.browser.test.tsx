@@ -1,0 +1,86 @@
+import { EnvironmentId, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
+import { expect, it, vi } from "vite-plus/test";
+import { render } from "../../test/render";
+import { makeThreadFixture } from "../test-fixtures";
+import { useClientSettings } from "../hooks/useSettings";
+import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
+import { useSidebarThreads } from "./Sidebar";
+
+vi.mock("../hooks/useSettings", { spy: true });
+vi.mock("../state/olderSettledShelf", () => ({
+  useOlderSettledShelf: () => ({
+    isListed: () => true,
+    unloadedCount: () => 0,
+    loading: false,
+    failed: false,
+  }),
+  useOlderSettledShelfGrowth: () => {},
+  readUnloadedThreadCount: () => 0,
+}));
+
+it("keeps an older project's chats visible beyond another project's ten recent settled chats", async () => {
+  vi.mocked(useClientSettings).mockImplementation((select) =>
+    select ? select(DEFAULT_CLIENT_SETTINGS) : DEFAULT_CLIENT_SETTINGS,
+  );
+  const environmentId = EnvironmentId.make("folder-history-test");
+  const instanceId = ProviderInstanceId.make("codex");
+  const projects = ["Recent", "Older project"].map((title) => ({
+    id: ProjectId.make(title),
+    environmentId,
+    title,
+    workspaceRoot: `/isolated/${title}`,
+    repositoryIdentity: null,
+    defaultModelSelection: { instanceId, model: "test" },
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    scripts: [],
+  }));
+  const threads = Array.from({ length: 14 }, (_, index) =>
+    makeThreadFixture({
+      environmentId,
+      id: ThreadId.make(`history-${index}`),
+      projectId: projects[index < 10 ? 0 : 1]!.id,
+      title: index < 10 ? `Recent ${index}` : `Older chat ${index - 9}`,
+      settledOverride: "settled",
+      settledAt: `2026-01-${String(31 - index).padStart(2, "0")}T00:00:00.000Z`,
+    }),
+  );
+  const folderGroups = buildSidebarProjectSnapshots({
+    projects,
+    settings: { sidebarProjectGroupingMode: "separate", sidebarProjectGroupingOverrides: {} },
+    primaryEnvironmentId: environmentId,
+    resolveEnvironmentLabel: () => "Fixture",
+  });
+  const config = {
+    environment: { environmentId, capabilities: {} },
+  } as EnvironmentServerConfig;
+  function ProjectFolders() {
+    const sidebar = useSidebarThreads({
+      projectScopeKey: null,
+      scopedProjectKeys: null,
+      serverConfigs: new Map([[environmentId, config]]),
+      connectedEnvironmentIds: [environmentId],
+      optimisticDrop: null,
+      threads,
+      delegatedUnderParent: new Set(),
+      routeRowThreadKey: null,
+      folderGroups,
+      projectFolderOrder: [],
+      keepEmptyFolders: () => true,
+      environmentIds: [environmentId],
+      providerEntriesByEnvironment: new Map(),
+    });
+    return (
+      <ul>
+        {sidebar.projectFolders?.flatMap((folder) =>
+          folder.threads.map((thread) => <li key={thread.id}>{thread.title}</li>),
+        )}
+      </ul>
+    );
+  }
+  await using screen = await render(<ProjectFolders />);
+  await expect.element(screen.getByText("Older chat 1", { exact: true })).toBeVisible();
+  await expect.element(screen.getByText("Older chat 4", { exact: true })).toBeVisible();
+});

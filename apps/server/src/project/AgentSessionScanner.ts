@@ -175,6 +175,7 @@ export class AgentSessionScanner extends Context.Service<
   AgentSessionScanner,
   {
     readonly scan: Effect.Effect<AgentSessionScanResult, AgentSessionScanError>;
+    readonly scanForSync: Effect.Effect<AgentSessionScanResult, AgentSessionScanError>;
     readonly recentThreads: (
       workspaceRoot: string,
       completedSources?: ReadonlyArray<AgentSessionImportSource>,
@@ -1264,7 +1265,9 @@ export const make = Effect.gen(function* () {
     }));
   });
 
-  const collectCandidates = Effect.fn("AgentSessionScanner.collectCandidates")(function* () {
+  const collectCandidates = Effect.fn("AgentSessionScanner.collectCandidates")(function* (
+    excludeCodex = false,
+  ) {
     const settings = yield* serverSettings.getSettings.pipe(
       Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-settings", cause })),
     );
@@ -1273,6 +1276,7 @@ export const make = Effect.gen(function* () {
     let truncated = false;
 
     for (const source of ["claudeAgent", "codex", "pi"] as const) {
+      if (excludeCodex && source === "codex") continue;
       const instances: Array<{
         readonly instanceId: ProviderInstanceId;
         readonly config: ProviderInstanceConfig;
@@ -1390,9 +1394,9 @@ export const make = Effect.gen(function* () {
 
   let cachedCandidates: ReadonlyArray<RawCandidate> | null = null;
 
-  const scan: AgentSessionScanner["Service"]["scan"] = Effect.gen(function* () {
-    const { candidates: raw, truncated } = yield* collectCandidates();
-    cachedCandidates = raw;
+  const scanForSources = Effect.fn("AgentSessionScanner.scan")(function* (excludeCodex: boolean) {
+    const { candidates: raw, truncated } = yield* collectCandidates(excludeCodex);
+    if (!excludeCodex) cachedCandidates = raw;
 
     const merged = new Map<
       string,
@@ -1686,7 +1690,11 @@ export const make = Effect.gen(function* () {
     options = {},
   ) => Stream.unwrap(prepareRecentThreads(workspaceRoot, completedSources, options));
 
-  return AgentSessionScanner.of({ scan, recentThreads });
+  return AgentSessionScanner.of({
+    scan: scanForSources(false),
+    scanForSync: scanForSources(true),
+    recentThreads,
+  });
 });
 
 export const layer = Layer.effect(AgentSessionScanner, make);

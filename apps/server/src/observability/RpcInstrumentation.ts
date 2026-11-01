@@ -160,6 +160,7 @@ const RPC_AGGREGATES = {
   [WS_METHODS.agentSessionsScan]: "workspace",
   [WS_METHODS.agentSessionsImport]: "workspace",
   [WS_METHODS.agentSessionsSync]: "workspace",
+  [WS_METHODS.agentSessionsDesktopSources]: "workspace",
   [WS_METHODS.agentSessionsMove]: "workspace",
   [WS_METHODS.agentSessionsOrganize]: "workspace",
   [WS_METHODS.assetsCreateUrl]: "workspace",

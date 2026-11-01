@@ -98,6 +98,8 @@ import {
   AgentSessionScanResult,
   AgentSessionScanError,
   AgentSessionSyncResult,
+  AgentSessionSyncInput,
+  AgentSessionDesktopSourcesResult,
   AgentSessionMoveInput,
   AgentSessionOrganizeInput,
   AgentSessionOrganizeResult,
@@ -427,6 +429,7 @@ export const WS_METHODS = {
   agentSessionsScan: "agentSessions.scan",
   agentSessionsImport: "agentSessions.import",
   agentSessionsSync: "agentSessions.sync",
+  agentSessionsDesktopSources: "agentSessions.desktopSources",
   agentSessionsMove: "agentSessions.move",
   agentSessionsOrganize: "agentSessions.organize",
   assetsCreateUrl: "assets.createUrl",
@@ -1389,8 +1392,13 @@ const WsAgentSessionsImportRpc = Rpc.make(WS_METHODS.agentSessionsImport, {
 });
 
 const WsAgentSessionsSyncRpc = Rpc.make(WS_METHODS.agentSessionsSync, {
-  payload: AgentSessionScanInput,
+  payload: AgentSessionSyncInput,
   success: AgentSessionSyncResult,
+  error: Schema.Union([AgentSessionScanError, EnvironmentAuthorizationError]),
+});
+const WsAgentSessionsDesktopSourcesRpc = Rpc.make(WS_METHODS.agentSessionsDesktopSources, {
+  payload: AgentSessionScanInput,
+  success: AgentSessionDesktopSourcesResult,
   error: Schema.Union([AgentSessionScanError, EnvironmentAuthorizationError]),
 });
 
@@ -2125,6 +2133,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsAgentSessionsScanRpc,
   WsAgentSessionsImportRpc,
   WsAgentSessionsSyncRpc,
+  WsAgentSessionsDesktopSourcesRpc,
   WsAgentSessionsMoveRpc,
   WsAgentSessionsOrganizeRpc,
   WsAssetsCreateUrlRpc,

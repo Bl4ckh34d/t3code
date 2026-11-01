@@ -1,6 +1,10 @@
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import { EnvironmentId, ProviderInstanceId, type ScopedProjectRef } from "@t3tools/contracts";
 import { SidebarCodexArchiveLink } from "./sidebar/SidebarCodexArchiveLink";
+import {
+  SidebarProjectFolderHistory,
+  SidebarProjectHistoryLoader,
+} from "./sidebar/SidebarProjectFolderHistory";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { ThreadContextDragGhost } from "./chat/ThreadContextDragGhost";
 import {
@@ -432,7 +436,7 @@ function routeThreadOnly(
 }
 
 // Separate hooks cache maps independently of later Sidebar hooks and preserve dnd-kit inputs.
-function useSidebarThreads(input: {
+export function useSidebarThreads(input: {
   readonly projectScopeKey: string | null;
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
@@ -540,15 +544,19 @@ function useSidebarThreads(input: {
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
   const olderSettledShelf = useOlderSettledShelf({
     scopes: olderSettledScopes([...serverConfigs.keys()], scopedProjectKeys),
-    expanded: folderGroups !== null || settledShelfExpanded,
+    expanded: folderGroups === null && settledShelfExpanded,
     visibleCount: settledVisibleCount,
   });
-  const listedSettledThreads = settledThreads.filter(olderSettledShelf.isListed);
+  const listedSettledThreads =
+    folderGroups === null ? settledThreads.filter(olderSettledShelf.isListed) : settledThreads;
   useOlderSettledShelfGrowth(olderSettledShelf, listedSettledThreads);
   const settledCount =
     settledThreads.length + olderSettledShelf.unloadedCount(partition.visibleThreads);
   const visibleSettledThreads = (() => {
-    const visible = listedSettledThreads.slice(0, settledVisibleCount);
+    const visible =
+      folderGroups === null
+        ? listedSettledThreads.slice(0, settledVisibleCount)
+        : listedSettledThreads;
     if (
       routeRowThreadKey !== null &&
       !visible.some((thread) => threadShellKey(thread) === routeRowThreadKey)
@@ -700,7 +708,8 @@ function useSidebarThreads(input: {
     settledVisibleCount,
     settledCount,
     olderSettledShelf,
-    hiddenSettledCount: Math.max(0, settledCount - visibleSettledThreads.length),
+    hiddenSettledCount:
+      folderGroups === null ? Math.max(0, settledCount - visibleSettledThreads.length) : 0,
     showMoreSettled: () =>
       setSettledTail((current) => ({
         scopeKey: current.scopeKey,
@@ -1664,6 +1673,18 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     providerEntriesByEnvironment,
   });
   const providerFolderGroups = projectFolders?.map((folder) => folder.group) ?? projectGroups;
+  const [projectHistoryLimits, setProjectHistoryLimits] = useState<
+    Readonly<Record<string, number>>
+  >({});
+  const projectHistoryKey = (group: SidebarProjectSnapshot) =>
+    `${group.environmentId}:${group.projectKey}`;
+  const settledThreadsByProject = new Map<string, EnvironmentThreadShell[]>();
+  for (const thread of settledThreads) {
+    const key = `${thread.environmentId}:${thread.organizationProjectId ?? thread.projectId}`;
+    const grouped = settledThreadsByProject.get(key) ?? [];
+    grouped.push(thread);
+    settledThreadsByProject.set(key, grouped);
+  }
 
   // Ranked across environments as the palette ranks them, so one
   // environment's list does not sit above another's better matches; rows
@@ -3442,6 +3463,24 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const newThreadInProjectShortcutLabel = shortcutLabelForCommand(keybindings, "chat.newLocal");
   return (
     <>
+      {/* Loading history can change its provider folder; keep the reads with the project. */}
+      {projectFolders !== null &&
+        splitSidebarProjectGroupsByEnvironment(projectGroups).map((group) => (
+          <SidebarProjectHistoryLoader
+            key={projectHistoryKey(group)}
+            group={group}
+            visibleCount={projectHistoryLimits[projectHistoryKey(group)] ?? 25}
+            expanded={projectFolders.some(
+              (folder) =>
+                folder.group.environmentId === group.environmentId &&
+                folder.group.projectKey === group.projectKey &&
+                !folder.collapsed,
+            )}
+            threads={group.memberProjectRefs.flatMap(
+              (ref) => settledThreadsByProject.get(`${ref.environmentId}:${ref.projectId}`) ?? [],
+            )}
+          />
+        ))}
       <ThreadContextDragGhost />
       <SidebarChromeHeader isElectron={isElectron} />
       <SidebarContent
@@ -3999,24 +4038,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                   onToggle={toggleProviderFolder}
                                 />,
                               );
-                              if (
-                                codex &&
-                                !provider.collapsed &&
-                                !environment.collapsed &&
-                                !provider.folders.some(
-                                  (folder) => folder.group.id === "codex-unassigned-history",
-                                )
-                              ) {
-                                items.push(
-                                  <SidebarCodexArchiveLink
-                                    key={`${provider.instanceId}:recent`}
-                                    environmentId={environment.environmentId}
-                                    instanceId={provider.instanceId}
-                                    emptyRecent
-                                  />,
-                                );
-                              }
+                              let recentShown = false;
                               for (const folder of provider.folders) {
+                                if (folder.group.id === "codex-unassigned-history")
+                                  recentShown = true;
                                 items.push(
                                   <SidebarProjectFolderHeader
                                     key={sidebarFolderRowId(folder.group)}
@@ -4073,8 +4098,38 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                     ),
                                   );
                                 }
+                                if (!folder.collapsed) {
+                                  items.push(
+                                    <SidebarProjectFolderHistory
+                                      key={`${sidebarFolderRowId(folder.group)}:history`}
+                                      group={folder.group}
+                                      onShowMore={() =>
+                                        setProjectHistoryLimits((limits) => ({
+                                          ...limits,
+                                          [projectHistoryKey(folder.group)]:
+                                            (limits[projectHistoryKey(folder.group)] ?? 25) + 25,
+                                        }))
+                                      }
+                                      threads={folder.group.memberProjectRefs.flatMap(
+                                        (ref) =>
+                                          settledThreadsByProject.get(
+                                            `${ref.environmentId}:${ref.projectId}`,
+                                          ) ?? [],
+                                      )}
+                                    />,
+                                  );
+                                }
                               }
                               if (codex && !provider.collapsed && !environment.collapsed) {
+                                if (!recentShown)
+                                  items.push(
+                                    <SidebarCodexArchiveLink
+                                      key={`${provider.instanceId}:recent`}
+                                      environmentId={environment.environmentId}
+                                      instanceId={provider.instanceId}
+                                      emptyRecent
+                                    />,
+                                  );
                                 items.push(
                                   <SidebarCodexArchiveLink
                                     key={`${provider.instanceId}:archive`}

@@ -19,6 +19,7 @@ import {
   ThreadId,
   TurnItemId,
   type AgentSessionImportInput,
+  type AgentSessionSyncInput,
   type AgentSessionImportResult,
   type OrchestrationV2AppThread,
   type OrchestrationV2ConversationMessage,
@@ -44,11 +45,13 @@ import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { synchronizeCodexHistory } from "./CodexHistory.ts";
+import { readCodexDesktopSources } from "./CodexDesktopSources.ts";
 import {
   synchronizeCodexMembership,
   moveCodexMembership,
   unassignedCodexProject,
   organizeCodex,
+  readCodexThreadOwners,
 } from "./CodexProjectMembership.ts";
 import type { AgentSessionOrganizeInput } from "@t3tools/contracts";
 
@@ -90,6 +93,23 @@ class AgentSessionThreadProjectConflictError extends Schema.TaggedError<AgentSes
 function dateTime(value: string): DateTime.Utc {
   return DateTime.makeUnsafe(value);
 }
+
+export const codexHistoryTarget = Effect.fn("AgentSessionImporter.codexHistoryTarget")(function* (
+  instanceId: ProviderInstanceId,
+  nativeId: string,
+  owners?: ReadonlyMap<string, readonly ThreadId[]>,
+) {
+  const owner = (owners ?? (yield* readCodexThreadOwners(instanceId))).get(nativeId)?.[0];
+  if (owner !== undefined) return owner;
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const canonical = ThreadId.make(`import:${instanceId}:${nativeId}`);
+  let target = canonical;
+  let suffix = 0;
+  while (Option.isSome(yield* Effect.option(orchestrator.getThreadRecords(target, [])))) {
+    target = ThreadId.make(`${canonical}:history:${++suffix}`);
+  }
+  return target;
+});
 
 function messageEvents(input: {
   readonly threadId: ThreadId;
@@ -193,6 +213,7 @@ const make = Effect.gen(function* () {
     input: AgentSessionImportInput,
     refreshDiscovery: boolean = true,
     supplied?: ReadonlyArray<AgentSessionScanner.AgentSessionRecentThread>,
+    nativeImportThreadId?: ThreadId,
   ) {
     const project = yield* projects.getById(input.projectId).pipe(
       Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-projects", cause })),
@@ -247,9 +268,9 @@ const make = Effect.gen(function* () {
           return;
         }
         const source = outcome.source;
-        const threadId = ThreadId.make(
-          `import:${source.providerInstanceId}:${source.providerSessionId}`,
-        );
+        const threadId =
+          nativeImportThreadId ??
+          ThreadId.make(`import:${source.providerInstanceId}:${source.providerSessionId}`);
         if (outcome._tag === "AlreadyImported") {
           importedThreadIds.add(threadId);
           importedCount += 1;
@@ -459,7 +480,10 @@ const make = Effect.gen(function* () {
           const providerThreadId = idAllocator.derive.providerThread({
             driver,
             providerInstanceId: thread.providerInstanceId,
-            nativeThreadId,
+            nativeThreadId:
+              nativeImportThreadId === undefined
+                ? nativeThreadId
+                : `${nativeThreadId}:history:${threadId}`,
           });
           const createdAt = dateTime(thread.createdAt);
           const updatedAt = dateTime(thread.updatedAt);
@@ -573,8 +597,8 @@ const make = Effect.gen(function* () {
     return { importedCount, skippedCount } satisfies AgentSessionImportResult;
   });
 
-  const sync = Effect.gen(function* () {
-    const scan = yield* scanner.scan;
+  const sync = Effect.fn("AgentSessionImporter.sync")(function* (input: AgentSessionSyncInput) {
+    const scan = yield* scanner.scanForSync;
     let importedCount = 0;
     let skippedCount = 0;
     let unlinkedProjectCount = 0;
@@ -634,43 +658,54 @@ const make = Effect.gen(function* () {
         instances.add(ProviderInstanceId.make(id));
     }
     for (const instanceId of instances) {
+      const nativeOwners = yield* readCodexThreadOwners(instanceId).pipe(
+        Effect.mapError(
+          (cause) => new AgentSessionScanError({ operation: "read-projects", cause }),
+        ),
+      );
       const history = yield* synchronizeCodexHistory(instanceId, (native, messages) =>
         Effect.gen(function* () {
-          const threadId = ThreadId.make(`import:${instanceId}:${native.id}`);
+          const threadId = yield* codexHistoryTarget(instanceId, native.id, nativeOwners);
           const existing = yield* Effect.option(orchestrator.getThreadRecords(threadId, []));
           let projectId = Option.isSome(existing) ? existing.value.thread.projectId : undefined;
           if (projectId === undefined) {
             projectId = (yield* unassignedCodexProject()).id;
           }
-          const result = yield* importRecentAgentThreads({ projectId, fullHistory: true }, false, [
-            {
-              _tag: "Importable",
-              source: {
-                provider: "codex",
-                providerInstanceId: instanceId,
-                providerSessionId: native.id,
-                filePath: `codex-api:${native.id}`,
-                size: messages.length,
-                mtimeMs: native.updatedAt * 1000,
-                device: 0,
-                inode: null,
-                birthtimeMs: null,
-                fullHistory: true,
+          const result = yield* importRecentAgentThreads(
+            { projectId, fullHistory: true },
+            false,
+            [
+              {
+                _tag: "Importable",
+                source: {
+                  provider: "codex",
+                  providerInstanceId: instanceId,
+                  providerSessionId: native.id,
+                  filePath: `codex-api:${native.id}`,
+                  size: messages.length,
+                  mtimeMs: native.updatedAt * 1000,
+                  device: 0,
+                  inode: null,
+                  birthtimeMs: null,
+                  fullHistory: true,
+                },
+                thread: {
+                  source: "codex",
+                  originalWorkspaceRoot: native.cwd,
+                  archived: native.archived,
+                  providerInstanceId: instanceId,
+                  providerSessionId: native.id,
+                  title: native.name ?? (native.preview.slice(0, 120) || "Codex chat"),
+                  model: null,
+                  createdAt: DateTime.formatIso(DateTime.makeUnsafe(native.createdAt * 1000)),
+                  updatedAt: DateTime.formatIso(DateTime.makeUnsafe(native.updatedAt * 1000)),
+                  messages,
+                },
               },
-              thread: {
-                source: "codex",
-                originalWorkspaceRoot: native.cwd,
-                archived: native.archived,
-                providerInstanceId: instanceId,
-                providerSessionId: native.id,
-                title: native.name ?? (native.preview.slice(0, 120) || "Codex chat"),
-                model: null,
-                createdAt: DateTime.formatIso(DateTime.makeUnsafe(native.createdAt * 1000)),
-                updatedAt: DateTime.formatIso(DateTime.makeUnsafe(native.updatedAt * 1000)),
-                messages,
-              },
-            },
-          ]);
+            ],
+            threadId,
+          );
+          if (result.importedCount > 0) nativeOwners.set(native.id, [threadId]);
           importedCount += result.importedCount;
           skippedCount += result.skippedCount;
         }),
@@ -679,7 +714,10 @@ const make = Effect.gen(function* () {
         Effect.orElseSucceed(() => 1),
       );
       skippedCount += history;
-      yield* synchronizeCodexMembership(instanceId).pipe(
+      yield* synchronizeCodexMembership(
+        instanceId,
+        input.desktopContexts?.find((context) => context.providerInstanceId === instanceId),
+      ).pipe(
         Effect.scoped,
         Effect.tap((result) =>
           Effect.sync(() => {
@@ -735,7 +773,20 @@ const make = Effect.gen(function* () {
     );
   return {
     importRecentAgentThreads,
-    sync: sync.pipe(syncLock.withPermits(1)),
+    sync: (input: AgentSessionSyncInput = {}) => sync(input).pipe(syncLock.withPermits(1)),
+    desktopSources: Effect.gen(function* () {
+      const settings = yield* (yield* ServerSettings.ServerSettingsService).getSettings;
+      const ids = new Set([ProviderInstanceId.make("codex")]);
+      for (const [id, instance] of Object.entries(settings.providerInstances)) {
+        if (instance.driver === "codex" && instance.enabled !== false)
+          ids.add(ProviderInstanceId.make(id));
+      }
+      const sources = yield* Effect.forEach([...ids], readCodexDesktopSources);
+      return { sources: sources.flat() };
+    }).pipe(
+      Effect.scoped,
+      Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-projects", cause })),
+    ),
     organize: (input: AgentSessionOrganizeInput) =>
       organizeCodex(input).pipe(
         Effect.scoped,
