@@ -48,7 +48,9 @@ import {
   synchronizeCodexMembership,
   moveCodexMembership,
   unassignedCodexProject,
+  organizeCodex,
 } from "./CodexProjectMembership.ts";
+import type { AgentSessionOrganizeInput } from "@t3tools/contracts";
 
 const IMPORT_EVENT_PREFIX = "agent-session-import:v2";
 const CLAUDE_SESSION_ID_PATTERN =
@@ -327,6 +329,23 @@ const make = Effect.gen(function* () {
             }
             for (const bucket of stored.values()) bucket.sort((a, b) => a.ordinal - b.ordinal);
             const events: Array<OrchestrationV2DomainEvent> = [];
+            if (
+              thread.archived !== undefined &&
+              thread.archived !== (existing.value.thread.archivedAt !== null)
+            ) {
+              const updatedAt = dateTime(thread.updatedAt);
+              events.push({
+                id: EventId.make(`${IMPORT_EVENT_PREFIX}:archive:${NodeCrypto.randomUUID()}`),
+                type: thread.archived ? "thread.archived" : "thread.unarchived",
+                threadId,
+                occurredAt: updatedAt,
+                payload: {
+                  ...existing.value.thread,
+                  archivedAt: thread.archived ? updatedAt : null,
+                  updatedAt,
+                },
+              });
+            }
             const reorder = (
               item: OrchestrationV2TurnItem,
               ordinal: number,
@@ -468,7 +487,7 @@ const make = Effect.gen(function* () {
             forkedFrom: null,
             createdAt,
             updatedAt,
-            archivedAt: null,
+            archivedAt: thread.archived ? updatedAt : null,
             settledOverride: "settled",
             settledAt: updatedAt,
             unsettledAt: null,
@@ -641,6 +660,7 @@ const make = Effect.gen(function* () {
               thread: {
                 source: "codex",
                 originalWorkspaceRoot: native.cwd,
+                archived: native.archived,
                 providerInstanceId: instanceId,
                 providerSessionId: native.id,
                 title: native.name ?? (native.preview.slice(0, 120) || "Codex chat"),
@@ -690,16 +710,47 @@ const make = Effect.gen(function* () {
       truncated: scan.truncated === true,
     };
   });
-  const move = (input: { threadId: ThreadId; projectId: ProjectId }) =>
-    moveCodexMembership(input.threadId, input.projectId).pipe(
+  const move = (input: { threadId: ThreadId; projectId: ProjectId; beforeThreadId?: ThreadId }) =>
+    moveCodexMembership(input.threadId, input.projectId, input.beforeThreadId).pipe(
+      Effect.filterOrFail(
+        (result) => !("moveConfirmation" in result),
+        () =>
+          new AgentSessionScanError({
+            operation: "read-projects",
+            cause: null,
+            detail:
+              "This move needs folder access confirmation. Update T3 and confirm the move in the project sidebar.",
+          }),
+      ),
       Effect.scoped,
       Effect.timeout("30 seconds"),
-      Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-projects", cause })),
+      Effect.mapError(
+        (cause) =>
+          new AgentSessionScanError({
+            operation: "read-projects",
+            cause,
+            ...(cause instanceof Error ? { detail: cause.message } : {}),
+          }),
+      ),
     );
   return {
     importRecentAgentThreads,
     sync: sync.pipe(syncLock.withPermits(1)),
-    move: (input: { threadId: ThreadId; projectId: ProjectId }) =>
+    organize: (input: AgentSessionOrganizeInput) =>
+      organizeCodex(input).pipe(
+        Effect.scoped,
+        Effect.timeout("30 seconds"),
+        Effect.mapError(
+          (cause) =>
+            new AgentSessionScanError({
+              operation: "read-projects",
+              cause,
+              ...(cause instanceof Error ? { detail: cause.message } : {}),
+            }),
+        ),
+        syncLock.withPermits(1),
+      ),
+    move: (input: { threadId: ThreadId; projectId: ProjectId; beforeThreadId?: ThreadId }) =>
       move(input).pipe(syncLock.withPermits(1)),
   };
 });

@@ -17,6 +17,7 @@ import { WS_METHODS } from "./rpc.ts";
 export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.agentSessionsSync]: AuthOrchestrationOperateScope,
   [WS_METHODS.agentSessionsMove]: AuthOrchestrationOperateScope,
+  [WS_METHODS.agentSessionsOrganize]: AuthOrchestrationOperateScope,
   [WS_METHODS.previewClose]: AuthPreviewOperateScope,
   // Stopping a server signals its processes, as closing a terminal does.
   [WS_METHODS.previewStopLocalServer]: AuthTerminalOperateScope,

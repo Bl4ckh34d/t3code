@@ -653,6 +653,14 @@ export const CodexSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    desktopPipePath: TrimmedString.pipe(
+      Schema.optionalKey,
+      Schema.annotateKey({
+        title: "Codex desktop connection",
+        description:
+          "Local app-tools socket provided by Codex desktop. Required to organize synchronized projects and chats; otherwise CODEX_APP_TOOLS_PIPE_PATH is used.",
+      }),
+    ),
     shadowHomePath: TrimmedString.pipe(
       Schema.withDecodingDefault(Effect.succeed("")),
       Schema.annotateKey({
@@ -678,7 +686,7 @@ export const CodexSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "shadowHomePath", "launchArgs"],
+    order: ["binaryPath", "homePath", "desktopPipePath", "shadowHomePath", "launchArgs"],
   },
 );
 export type CodexSettings = typeof CodexSettings.Type;

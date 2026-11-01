@@ -7,6 +7,7 @@ import type {
 import type { EnvironmentPresentation } from "../../state/environments";
 
 export interface SettingsScopeSearch {
+  archiveProvider?: string | undefined;
   project?: string | undefined;
   machine?: string | undefined;
   checkout?: string | undefined;
@@ -47,10 +48,12 @@ export function validateSettingsScopeSearch(raw: Record<string, unknown>): Setti
   const project = stringValue(raw.project);
   const machine = stringValue(raw.machine);
   const checkout = stringValue(raw.checkout);
+  const archiveProvider = stringValue(raw.archiveProvider);
   return {
     ...(project === undefined ? {} : { project }),
     ...(machine === undefined ? {} : { machine }),
     ...(checkout === undefined ? {} : { checkout }),
+    ...(archiveProvider === undefined ? {} : { archiveProvider }),
   };
 }
 

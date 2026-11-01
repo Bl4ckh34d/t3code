@@ -2853,7 +2853,9 @@ export const layerWsRpc = (
         [WS_METHODS.attachmentsDelete]: (input) => deletePendingAttachment(input.attachmentId),
         [WS_METHODS.agentSessionsScan]: () => agentSessionScanner.scan,
         [WS_METHODS.agentSessionsSync]: () => agentSessionImporter.sync,
-        [WS_METHODS.agentSessionsMove]: (input) => agentSessionImporter.move(input),
+        [WS_METHODS.agentSessionsMove]: (input) =>
+          agentSessionImporter.move(input).pipe(Effect.asVoid),
+        [WS_METHODS.agentSessionsOrganize]: (input) => agentSessionImporter.organize(input),
         [WS_METHODS.agentSessionsImport]: (input) =>
           agentSessionImporter.importRecentAgentThreads(input),
         [WS_METHODS.assetsCreateUrl]:

@@ -1,6 +1,43 @@
 import { type PointerEvent as ReactPointerEvent } from "react";
 import { type SensorProps } from "@dnd-kit/core";
 import { getOwnerDocument, getWindow } from "@dnd-kit/utilities";
+import "./Sidebar.drag.css";
+
+export function createSidebarPointerFeedback(container: Element, source: Element) {
+  let target: Element | null = null;
+  const update = (next: { rowId: string; placement: "before" | "after" | "inside" } | null) => {
+    target?.removeAttribute("data-sidebar-drop-placement");
+    target = next
+      ? container.querySelector(`[data-sidebar-row="${CSS.escape(next.rowId)}"]`)
+      : null;
+    if (next) target?.setAttribute("data-sidebar-drop-placement", next.placement);
+  };
+  return {
+    start: () => {
+      container.classList.add("sidebar-pointer-dragging");
+      source.setAttribute("data-sidebar-drag-source", "true");
+    },
+    update,
+    clear: () => {
+      update(null);
+      container.classList.remove("sidebar-pointer-dragging");
+      source.removeAttribute("data-sidebar-drag-source");
+    },
+  };
+}
+
+export function sidebarPointerDropTarget(container: Element, point: { x: number; y: number }) {
+  const row = container.ownerDocument
+    .elementFromPoint(point.x, point.y)
+    ?.closest<HTMLElement>("[data-sidebar-row]");
+  if (!row || !container.contains(row) || !row.dataset.sidebarRow) return null;
+  const bounds = row.getBoundingClientRect();
+  return {
+    rowId: row.dataset.sidebarRow,
+    parentId: row.dataset.sidebarParent,
+    placement: point.y < bounds.top + bounds.height / 2 ? ("before" as const) : ("after" as const),
+  };
+}
 
 type Options = {
   distance: number;

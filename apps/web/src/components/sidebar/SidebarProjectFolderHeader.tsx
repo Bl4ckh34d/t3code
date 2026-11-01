@@ -1,6 +1,6 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { ChevronDownIcon, PinIcon, SquarePenIcon } from "lucide-react";
+import { ChevronDownIcon, ClockIcon, PinIcon, SquarePenIcon } from "lucide-react";
 import { memo, useState } from "react";
 
 import { cn } from "~/lib/utils";
@@ -11,6 +11,7 @@ import { ProjectFavicon } from "../ProjectFavicon";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { sidebarEnvironmentRowId } from "./SidebarEnvironmentHeader";
+import { sidebarProviderRowId } from "./SidebarProviderHeader";
 
 const FOLDER_DOT_CLASS_NAME = {
   attention: "bg-warning",
@@ -28,9 +29,9 @@ const FOLDER_DOT_LABEL = {
 
 /** The folder's sidebar tree row; its thread rows name it as their parent. */
 export function sidebarFolderRowId(
-  group: Pick<SidebarProjectSnapshot, "environmentId" | "projectKey">,
+  group: Pick<SidebarProjectSnapshot, "environmentId" | "projectKey" | "sidebarProviderInstanceId">,
 ) {
-  return `folder:${group.environmentId}:${group.projectKey}`;
+  return `folder:${group.environmentId}:${group.sidebarProviderInstanceId ? `${group.sidebarProviderInstanceId}:` : ""}${group.projectKey}`;
 }
 
 /**
@@ -40,7 +41,8 @@ export function sidebarFolderRowId(
  */
 export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHeader(props: {
   canDropThread?: boolean;
-  onDragProjectStart?: React.DragEventHandler<HTMLButtonElement>;
+  canDropNow?: () => boolean;
+  onDragProjectStart?: React.DragEventHandler<HTMLButtonElement> | undefined;
   onDragProjectEnd?: React.DragEventHandler<HTMLButtonElement>;
   projectDragActive?: boolean;
   onDropThread?: (group: SidebarProjectSnapshot, placement?: "before" | "after") => void;
@@ -80,11 +82,11 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
           "rounded-md ring-2 ring-primary",
       )}
       onDragOver={(event) => {
-        if (props.canDropThread) {
+        if (props.canDropNow?.() ?? props.canDropThread) {
           event.preventDefault();
           event.dataTransfer.dropEffect = "move";
           setDragOver(true);
-          if (props.projectDragActive) {
+          if (event.dataTransfer.types.includes("application/x-t3-project")) {
             const bounds = event.currentTarget.getBoundingClientRect();
             setDropPlacement(event.clientY < bounds.top + bounds.height / 2 ? "before" : "after");
           }
@@ -100,9 +102,17 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
       }}
       onDrop={(event) => {
         setDragOver(false);
-        if (props.canDropThread) {
+        if (props.canDropNow?.() ?? props.canDropThread) {
           event.preventDefault();
-          props.onDropThread?.(group, props.projectDragActive ? dropPlacement : undefined);
+          const bounds = event.currentTarget.getBoundingClientRect();
+          props.onDropThread?.(
+            group,
+            event.dataTransfer.types.includes("application/x-t3-project")
+              ? event.clientY < bounds.top + bounds.height / 2
+                ? "before"
+                : "after"
+              : undefined,
+          );
         }
       }}
     >
@@ -124,16 +134,28 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
         role="treeitem"
         tabIndex={-1}
         data-sidebar-row={rowId}
-        data-sidebar-parent={sidebarEnvironmentRowId(group.environmentId)}
+        data-sidebar-parent={
+          group.sidebarProviderInstanceId
+            ? sidebarProviderRowId(group.environmentId, group.sidebarProviderInstanceId)
+            : sidebarEnvironmentRowId(group.environmentId)
+        }
         aria-expanded={!collapsed}
         onClick={() => props.onToggle(group)}
         onContextMenu={(event) => {
           event.preventDefault();
-          props.onContextMenu(group, { x: event.clientX, y: event.clientY });
+          if (group.id !== "codex-unassigned-history")
+            props.onContextMenu(group, { x: event.clientX, y: event.clientY });
         }}
-        className="flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) pe-(--sidebar-row-content-inset) ps-7 text-left outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className={cn(
+          "flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-(--control-radius) pe-(--sidebar-row-content-inset) text-left outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          group.sidebarProviderInstanceId ? "ps-16" : "ps-7",
+        )}
       >
-        <ProjectFavicon project={group} className="size-4 shrink-0" />
+        {group.id === "codex-unassigned-history" ? (
+          <ClockIcon aria-hidden className="size-4 shrink-0" />
+        ) : (
+          <ProjectFavicon project={group} className="size-4 shrink-0" />
+        )}
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-sidebar-foreground/90">
           {group.displayName}
         </span>

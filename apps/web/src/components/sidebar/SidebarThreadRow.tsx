@@ -534,6 +534,8 @@ function TopStatusIcon(props: { icon: keyof typeof TOP_STATUS_ICONS; className: 
 type SidebarThreadRowProps = {
   onProjectDragStart?: React.DragEventHandler<HTMLLIElement> | undefined;
   onProjectDragEnd?: React.DragEventHandler<HTMLLIElement> | undefined;
+  onProjectDragOver?: React.DragEventHandler<HTMLLIElement> | undefined;
+  onProjectDrop?: React.DragEventHandler<HTMLLIElement> | undefined;
   thread: SidebarThreadSummary;
   // "folder" is a one-line row inside a boring sidebar project folder;
   // "folder-multiline" adds the card's branch and PR line under it.
@@ -1208,6 +1210,20 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         onDragEnd={props.onProjectDragEnd}
         {...sortableRootProps}
         {...(fileDropHandlers ?? {})}
+        {...(props.onProjectDrop
+          ? {
+              onDragOver: (event: React.DragEvent<HTMLLIElement>) => {
+                if (event.dataTransfer.types.includes("application/x-t3-thread"))
+                  props.onProjectDragOver?.(event);
+                else fileDropHandlers?.onDragOver(event);
+              },
+              onDrop: (event: React.DragEvent<HTMLLIElement>) => {
+                if (event.dataTransfer.types.includes("application/x-t3-thread"))
+                  props.onProjectDrop?.(event);
+                else fileDropHandlers?.onDrop(event);
+              },
+            }
+          : {})}
         className={cn(
           "list-none [content-visibility:auto] [contain-intrinsic-size:auto_36px]",
           metaLine !== null && multiline && "[contain-intrinsic-size:auto_54px]",
@@ -1233,7 +1249,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                     ? "flex flex-col justify-center px-2.5 py-1.5"
                     : "flex h-9 items-center gap-2.5 px-2.5",
                   // Lines titles up with the folder name, past its chevron and icon.
-                  inFolder && "ps-14",
+                  inFolder && "ps-24",
                 )}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}

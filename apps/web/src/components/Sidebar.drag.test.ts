@@ -5,6 +5,7 @@ import {
   createSidebarCollisionDetection,
   createSidebarSortingStrategy,
   restrictBelowSidebarLabel,
+  projectThreadDropBefore,
 } from "./Sidebar.drag";
 import {
   resolveSidebarDropTarget,
@@ -25,6 +26,29 @@ const pinnedHeader = marker("pinned-header");
 const divider = marker("pinned-divider");
 const settledHeader = marker("settled-header");
 const stationary = { x: 0, y: 0, scaleX: 1, scaleY: 1 };
+
+it.each([
+  ["a", "b", "after", "c", ["a", "b", "c"]],
+  ["c", "a", "before", "a", ["a", "b", "c"]],
+  ["a", "c", "after", undefined, ["a", "b", "c"]],
+  ["b", "a", "after", "c", ["a", "b", "c"]],
+  ["external", "b", "after", "c", ["a", "b", "c"]],
+  ["a", "b", "after", undefined, ["a", "b"]],
+  ["external", "a", "after", "c", ["a", "c"]],
+] as const)(
+  "places project chat %s %s / %s at the native insertion target",
+  (source, target, placement, expected, eligible) => {
+    expect(
+      projectThreadDropBefore(
+        ["a", "b", "c"],
+        source,
+        target,
+        placement,
+        new Set<string>(eligible),
+      ),
+    ).toBe(expected);
+  },
+);
 
 function layout(
   items: readonly SidebarListItem[],

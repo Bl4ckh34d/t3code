@@ -1,6 +1,10 @@
 import { useComposerMenuState } from "../chat/useComposerMenuState";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
-import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  CODEX_PROJECT_RENAME_DISABLED_MESSAGE,
+} from "@t3tools/contracts";
+import { useBoringSidebarEnabled } from "../../hooks/useSettings";
 import { useEnvironmentsWithScope } from "../../state/session";
 import { mapAtomCommandResult, settlePromise } from "@t3tools/client-runtime/state/runtime";
 import { scopeProjectRef, scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -203,6 +207,7 @@ function ProjectDetail({
     reportFailure: false,
   });
   const projectNameEditedRef = useRef(false);
+  const synchronizedSidebar = useBoringSidebarEnabled();
 
   const faviconPath = representative.faviconPath ?? null;
   const projectIcon = representative.projectIcon ?? null;
@@ -232,6 +237,7 @@ function ProjectDetail({
   };
 
   const renameGroup = async (nextTitle: string, wasEdited: boolean) => {
+    if (synchronizedSidebar) return;
     const title = nextTitle.trim();
     if (!title) {
       toastManager.add({ type: "warning", title: "Project title cannot be empty" });
@@ -432,12 +438,16 @@ function ProjectDetail({
           ) : null}
           <SettingsRow
             title="Name"
-            description="The shared name for this project group in the sidebar and thread lists."
+            description={
+              synchronizedSidebar
+                ? CODEX_PROJECT_RENAME_DISABLED_MESSAGE
+                : "The shared name for this project group in the sidebar and thread lists."
+            }
             resetAction={
               canResetScratchTitle ? (
                 <SettingResetButton
                   label="project name"
-                  disabled={!canEditGroup}
+                  disabled={!canEditGroup || synchronizedSidebar}
                   onClick={() =>
                     void updateAllMembers(
                       { title: SCRATCH_PROJECT_TITLE },
@@ -453,7 +463,7 @@ function ProjectDetail({
                 size="sm"
                 className="w-full sm:w-64"
                 aria-label="Project name"
-                disabled={!canEditGroup}
+                disabled={!canEditGroup || synchronizedSidebar}
                 defaultValue={group.displayName}
                 onChange={() => {
                   projectNameEditedRef.current = true;

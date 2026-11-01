@@ -332,10 +332,22 @@ an approval or answer from you, when a run fails, or when you send it a message.
 
 # Synchronizing Codex history
 
-Use **Sync agent history** in the sidebar to import conversation text and reconcile Codex project membership on connected machines. Synchronization is manual. Each machine needs an updated T3 server. Offline machines must reconnect before their history can synchronize.
+Use **Sync agent history** in the sidebar to import conversation text and reconcile Codex project membership on connected machines. This includes older and archived Codex chats from all model providers. Repeating synchronization fills missing history without creating a second copy of a chat. Archived chats stay in **Settings > Archive**. Synchronization is manual. Each machine needs an updated T3 server. Offline machines must reconnect before their history can synchronize.
 
 Drag a chat onto another project folder on the same connection to move its organization. Its execution directory, branch, and worktree remain attached to the original workspace.
 
-Manual synchronization also reconciles project and chat names. The first synchronization uses Codex names as the starting point. Later changes made on either side are copied to the other side. If both names changed differently since the last synchronization, neither name is overwritten; make them agree and synchronize again.
+Manual synchronization takes project and chat names, project membership, and sidebar order from Codex. Codex remains authoritative on every synchronization.
+
+To organize synchronized data from T3, connect the environment to the running Codex desktop app. In the Codex provider settings, **CODEX_HOME path** must match that app. The desktop connection supplied when T3 starts from Codex is used automatically; **Codex desktop connection** can select another local connection. T3 applies a rename, move, or reorder only after Codex acknowledges it. A disconnected or unsupported desktop connection leaves T3 unchanged and reports an error.
+
+Current Codex desktop connections support chat renaming but do not expose project renaming to T3. Project names are read-only while the Boring sidebar is enabled. Rename a synchronized project in Codex, then use **Sync agent history** in T3 to read its name.
+
+The Boring sidebar groups each machine's projects under their provider connection. **Letzte** contains active chats without a Codex project. **Archiv** opens archived chats for that machine and Codex connection; its filter stays selected after reloading.
+
+On Windows, dragging dims the original row and shows a grabbing cursor. An insertion line marks the new position when sorting chats or projects. A highlighted project header marks the destination when moving a chat.
+
+In the project sidebar on web and Windows, drag a project header before or after another header to change project order. Drop a chat on a project header to move it, or on the upper or lower half of another chat to place it before or after that chat. Synchronize history on another client to read the current Codex order there.
+
+Reordering chats enables Codex's shared manual sorting for Recents and project chats. Moving to another project can require additional folder access. Current Codex desktop connections require this approval in Codex's sidebar: move the chat there and approve the listed folders, then synchronize history in T3. T3 displays the required folders and leaves access and membership unchanged until Codex accepts the move. Subsequent moves between projects with approved folder access can use T3's drag-and-drop controls.
 
 History imports contain user and assistant text, rather than a replay of tools or attachments. Unavailable source folders, unsupported Codex versions, import budgets, and naming conflicts produce an incomplete-sync warning. Resolve persistent warnings before treating the import as complete.

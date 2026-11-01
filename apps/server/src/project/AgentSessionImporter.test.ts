@@ -105,54 +105,60 @@ it.effect("pulls Codex desktop names and order without writing to Codex", () =>
       updatedAt: timestamp,
       deletedAt: null,
     };
-    const result = yield* pullCodexMembership(
-      CODEX_MODEL_SELECTION.instanceId,
-      {
-        request: (method) =>
-          method === "project/list"
-            ? Effect.succeed({
-                data: [
-                  {
-                    id: "native",
-                    name: "Old",
-                    roots: [{ path: "/repo" }],
-                    metadata: { "t3code.projectId": projectId, "t3code.syncedTitle": "Old" },
-                  },
-                ],
-              })
-            : method === "thread/list"
-              ? Effect.succeed({ data: [] })
-              : Effect.die(`Pull must not call ${method}`),
-      },
-      {
-        "app-server-project-id-by-legacy-project-id-by-host": {
-          "local:/codex": { legacy: "native" },
+    for (const native of [
+      { name: "Old", updatedAt: undefined, expected: "Codex desktop rename" },
+      { name: "Confirmed native rename", updatedAt: 1, expected: "Confirmed native rename" },
+    ]) {
+      const result = yield* pullCodexMembership(
+        CODEX_MODEL_SELECTION.instanceId,
+        {
+          request: (method) =>
+            method === "project/list"
+              ? Effect.succeed({
+                  data: [
+                    {
+                      id: "native",
+                      name: native.name,
+                      ...(native.updatedAt === undefined ? {} : { updatedAt: native.updatedAt }),
+                      roots: [{ path: "/repo" }],
+                      metadata: { "t3code.projectId": projectId, "t3code.syncedTitle": "Old" },
+                    },
+                  ],
+                })
+              : method === "thread/list"
+                ? Effect.succeed({ data: [] })
+                : Effect.die(`Pull must not call ${method}`),
         },
-        "local-projects": { legacy: { name: "Codex desktop rename", rootPaths: ["/repo"] } },
-        "project-order": ["legacy"],
-      },
-      "/codex",
-    ).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          ServerConfig.layerTest("/repo", { prefix: "t3-codex-pull-test-" }).pipe(
-            Layer.provideMerge(NodeServices.layer),
+        {
+          "app-server-project-id-by-legacy-project-id-by-host": {
+            "local:/codex": { legacy: "native" },
+          },
+          "local-projects": { legacy: { name: "Codex desktop rename", rootPaths: ["/repo"] } },
+          "project-order": ["legacy"],
+        },
+        "/codex",
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            ServerConfig.layerTest("/repo", { prefix: "t3-codex-pull-test-" }).pipe(
+              Layer.provideMerge(NodeServices.layer),
+            ),
+            Layer.mock(ProjectService.ProjectService)({
+              getById: () => Effect.succeedSome(project),
+              update: (input) =>
+                Effect.sync(() => {
+                  Object.assign(project, { title: input.title ?? project.title });
+                  return project;
+                }),
+            }),
+            Layer.mock(Orchestrator.OrchestratorV2)({}),
           ),
-          Layer.mock(ProjectService.ProjectService)({
-            getById: () => Effect.succeedSome(project),
-            update: (input) =>
-              Effect.sync(() => {
-                project = { ...project, title: input.title ?? project.title };
-                return project;
-              }),
-          }),
-          Layer.mock(Orchestrator.OrchestratorV2)({}),
         ),
-      ),
-    );
-    expect(project.title).toBe("Codex desktop rename");
-    expect(result.projectIds).toEqual([projectId]);
-    expect(result.threadIds).toEqual([]);
+      );
+      expect(project.title).toBe(native.expected);
+      expect(result.projectIds).toEqual([projectId]);
+      expect(result.threadIds).toEqual([]);
+    }
   }).pipe(Effect.scoped, Effect.provide(persistence)),
 );
 
@@ -242,15 +248,24 @@ it.effect("appends source messages on reimport without duplicating existing hist
     const original = candidate(CODEX_MODEL_SELECTION, "incremental");
     const source = {
       ...original,
-      thread: { ...original.thread, originalWorkspaceRoot: "/missing/original-workspace" },
+      thread: {
+        ...original.thread,
+        archived: true,
+        originalWorkspaceRoot: "/missing/original-workspace",
+      },
     };
     const first = yield* makeImporter([source]);
     yield* first.run;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    expect(
+      (yield* projections.getThreadRecords(importId(source), [])).thread.archivedAt,
+    ).not.toBeNull();
     const updated = {
       ...source,
       source: { ...source.source, size: 200, mtimeMs: 3 },
       thread: {
         ...source.thread,
+        archived: false,
         messages: [
           ...source.thread.messages,
           { role: "user" as const, text: "Another task", createdAt: timestamp },
@@ -260,8 +275,8 @@ it.effect("appends source messages on reimport without duplicating existing hist
     const second = yield* makeImporter([updated]);
     yield* second.run;
     yield* second.run;
-    const projections = yield* ProjectionStore.ProjectionStoreV2;
     const records = yield* projections.getThreadRecords(importId(source), ["messages"]);
+    expect(records.thread.archivedAt).toBeNull();
     expect(records.thread.worktreePath).toBe("/missing/original-workspace");
     expect(records.messages.map((message) => message.text)).toEqual([
       "Fix it",
@@ -272,12 +287,16 @@ it.effect("appends source messages on reimport without duplicating existing hist
       ...updated,
       thread: {
         ...updated.thread,
+        archived: true,
         messages: [...updated.thread.messages, updated.thread.messages[2]!],
       },
     };
     const third = yield* makeImporter([repeated]);
     yield* third.run;
     yield* third.run;
+    expect(
+      (yield* projections.getThreadRecords(importId(source), [])).thread.archivedAt,
+    ).not.toBeNull();
     expect(
       (yield* projections.getThreadRecords(importId(source), ["messages"])).messages.map(
         (message) => message.text,

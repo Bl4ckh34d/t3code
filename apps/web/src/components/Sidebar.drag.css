@@ -1,0 +1,38 @@
+.sidebar-pointer-dragging,
+.sidebar-pointer-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+[data-sidebar-drag-source] {
+  opacity: 0.45;
+}
+
+[data-sidebar-drop-placement] {
+  position: relative;
+}
+
+[data-sidebar-drop-placement="before"]::before,
+[data-sidebar-drop-placement="after"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  border-top: 2px solid var(--primary, currentColor);
+  pointer-events: none;
+}
+
+[data-sidebar-drop-placement="before"]::before {
+  top: -2px;
+}
+
+[data-sidebar-drop-placement="after"]::after {
+  bottom: -2px;
+}
+
+[data-sidebar-drop-placement="inside"] {
+  border-radius: var(--control-radius, 0.5rem);
+  background: color-mix(in srgb, var(--primary, currentColor) 15%, transparent);
+  box-shadow: inset 0 0 0 2px var(--primary, currentColor);
+}

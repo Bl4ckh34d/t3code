@@ -1,4 +1,8 @@
-import { AuthOrchestrationOperateScope, type ProjectIconOverride } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  CODEX_PROJECT_RENAME_DISABLED_MESSAGE,
+  type ProjectIconOverride,
+} from "@t3tools/contracts";
 import {
   isAtomCommandInterrupted,
   mapAtomCommandResult,
@@ -15,6 +19,7 @@ import { readEnvironment } from "../state/environments";
 import { projectEnvironment } from "../state/projects";
 import { readEnvironmentScope, useEnvironmentsWithScope } from "../state/session";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
+import { useBoringSidebarEnabled } from "./useSettings";
 
 export type ProjectGroupUpdate = Partial<{
   title: string;
@@ -34,6 +39,7 @@ type ProjectGroupMember = Pick<
  * reports the first failure as a toast. Every machine must be connected first.
  */
 export function useProjectGroupUpdate() {
+  const synchronizedSidebar = useBoringSidebarEnabled();
   const serverConfigs = useServerConfigs();
   const updateProject = useOrchestrationCommand(projectEnvironment.update, {
     reportFailure: false,
@@ -60,12 +66,15 @@ export function useProjectGroupUpdate() {
       // Access can be revoked between writes.
       const revoked = checkProjectAccess([member], failureTitle);
       if (revoked) return revoked;
+      const changes = typeof input === "function" ? input(member) : input;
+      if (changes.title !== undefined && synchronizedSidebar)
+        return failWith(failureTitle, CODEX_PROJECT_RENAME_DISABLED_MESSAGE);
       const result = mapAtomCommandResult(
         await updateProject({
           environmentId: member.environmentId,
           input: {
             projectId: member.id,
-            ...(typeof input === "function" ? input(member) : input),
+            ...changes,
           },
         }),
         () => undefined,

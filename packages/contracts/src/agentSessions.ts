@@ -11,6 +11,9 @@ import { ProviderInstanceId } from "./providerInstance.ts";
 export const AgentSessionSource = Schema.Literals(["claudeAgent", "codex", "pi"]);
 export type AgentSessionSource = typeof AgentSessionSource.Type;
 
+export const CODEX_PROJECT_RENAME_DISABLED_MESSAGE =
+  "Project renaming from T3 is temporarily disabled. Rename the project in Codex, then synchronize agent history.";
+
 export const AgentSessionImportSource = Schema.Struct({
   fullHistory: Schema.optional(Schema.Boolean),
   provider: AgentSessionSource,
@@ -99,7 +102,50 @@ export const AgentSessionSyncResult = Schema.Struct({
   truncated: Schema.Boolean,
 });
 
-export const AgentSessionMoveInput = Schema.Struct({ threadId: ThreadId, projectId: ProjectId });
+export const AgentSessionMoveInput = Schema.Struct({
+  threadId: ThreadId,
+  projectId: ProjectId,
+  beforeThreadId: Schema.optionalKey(ThreadId),
+});
+
+export const AgentSessionOrganizeResult = Schema.Struct({
+  ...AgentSessionSidebarOrder.fields,
+  desktopRefreshRequired: Schema.optionalKey(Schema.Boolean),
+  moveConfirmation: Schema.optionalKey(
+    Schema.Struct({
+      threadId: ThreadId,
+      projectId: ProjectId,
+      projectTitle: TrimmedNonEmptyString,
+      sourcePaths: Schema.Array(TrimmedNonEmptyString),
+    }),
+  ),
+});
+
+export const AgentSessionOrganizeInput = Schema.Union([
+  Schema.Struct({
+    action: Schema.Literal("move-thread"),
+    threadId: ThreadId,
+    projectId: ProjectId,
+    beforeThreadId: Schema.optionalKey(ThreadId),
+    confirmedSourcePaths: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
+  }),
+  Schema.Struct({
+    action: Schema.Literal("rename-project"),
+    projectId: ProjectId,
+    title: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    action: Schema.Literal("rename-thread"),
+    threadId: ThreadId,
+    title: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    action: Schema.Literal("reorder-projects"),
+    providerInstanceId: Schema.optionalKey(ProviderInstanceId),
+    projectIds: Schema.Array(ProjectId),
+  }),
+]);
+export type AgentSessionOrganizeInput = typeof AgentSessionOrganizeInput.Type;
 export type AgentSessionImportResult = typeof AgentSessionImportResult.Type;
 
 export class AgentSessionScanError extends Schema.TaggedError<AgentSessionScanError>()(
@@ -107,9 +153,10 @@ export class AgentSessionScanError extends Schema.TaggedError<AgentSessionScanEr
   {
     operation: Schema.Literals(["read-settings", "read-projects"]),
     cause: Schema.Defect(),
+    detail: Schema.optionalKey(Schema.String),
   },
 ) {
   override get message(): string {
-    return `Failed to scan agent sessions during ${this.operation}.`;
+    return this.detail ?? `Failed to scan agent sessions during ${this.operation}.`;
   }
 }

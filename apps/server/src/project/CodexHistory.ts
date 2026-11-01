@@ -5,7 +5,7 @@ import * as Schema from "effect/Schema";
 import {
   connect,
   request,
-  CODEX_SYNC_THREAD_SOURCES,
+  CODEX_SYNC_THREAD_LIST_PARAMS,
   type RawClient,
 } from "./CodexProjectMembership.ts";
 import type { AgentSessionThreadMessage } from "./AgentSessionScanner.ts";
@@ -100,12 +100,13 @@ export const readCodexConversation = Effect.fn("readCodexConversation")(function
 export const synchronizeCodexHistory = Effect.fn("synchronizeCodexHistory")(function* <E, R>(
   instanceId: ProviderInstanceId,
   importThread: (
-    thread: typeof NativeThread.Type,
+    thread: typeof NativeThread.Type & { readonly archived: boolean },
     messages: ReadonlyArray<AgentSessionThreadMessage>,
   ) => Effect.Effect<void, E, R>,
 ) {
   const { client } = yield* connect(instanceId);
   let skipped = 0;
+  const imported = new Set<string>();
   for (const archived of [false, true]) {
     const seen = new Set<string>();
     let cursor: string | undefined;
@@ -113,14 +114,15 @@ export const synchronizeCodexHistory = Effect.fn("synchronizeCodexHistory")(func
       const page = yield* decodeThreadPage(
         yield* request(client.raw, "thread/list", {
           archived,
-          sourceKinds: CODEX_SYNC_THREAD_SOURCES,
-          limit: 100,
+          ...CODEX_SYNC_THREAD_LIST_PARAMS,
           ...(cursor ? { cursor } : {}),
         }),
       );
       for (const thread of page.data) {
+        if (imported.has(thread.id)) continue;
+        imported.add(thread.id);
         yield* readCodexConversation(client.raw, thread.id, thread.createdAt).pipe(
-          Effect.flatMap((messages) => importThread(thread, messages)),
+          Effect.flatMap((messages) => importThread({ ...thread, archived }, messages)),
           Effect.catch((cause) =>
             Effect.logWarning("Codex history import failed", { threadId: thread.id, cause }).pipe(
               Effect.tap(

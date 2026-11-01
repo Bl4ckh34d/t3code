@@ -32,6 +32,7 @@ import type { Project } from "../../types";
 
 type SessionResult = AsyncResult.AsyncResult<AuthSessionState, Error>;
 const state = vi.hoisted(() => ({
+  boringSidebarEnabled: false,
   sessions: new Map<EnvironmentId, Atom.Writable<SessionResult>>(),
   projects: [] as Project[],
   update:
@@ -101,6 +102,7 @@ vi.mock(import("~/state/use-atom-command"), async (original) => ({
 }));
 vi.mock(import("~/hooks/useSettings"), async (original) => ({
   ...(await original()),
+  useBoringSidebarEnabled: () => state.boringSidebarEnabled,
   useClientSettings: ((selector?: (settings: typeof DEFAULT_CLIENT_SETTINGS) => unknown) =>
     selector ? selector(DEFAULT_CLIENT_SETTINGS) : DEFAULT_CLIENT_SETTINGS) as never,
 }));
@@ -177,6 +179,7 @@ function deferred<T>() {
 
 function setup() {
   vi.clearAllMocks();
+  state.boringSidebarEnabled = false;
   state.sessions.clear();
   for (const id of [primaryId, remoteId])
     state.sessions.set(id, Atom.make<SessionResult>(writable()).pipe(Atom.keepAlive));
@@ -333,6 +336,16 @@ async function expectProjectAccessDeniedToast(title: string) {
 }
 
 describe("project organization", () => {
+  it("keeps project names read-only while synchronized sidebar renaming is unavailable", async () => {
+    setup();
+    state.boringSidebarEnabled = true;
+    await using screen = await mountPanel();
+    await expect.element(page.getByRole("textbox", { name: "Project name" })).toBeDisabled();
+    expect(screen.container.textContent).toContain(
+      "Project renaming from T3 is temporarily disabled",
+    );
+    expect(state.update).not.toHaveBeenCalled();
+  });
   it("archives the checkout on every machine while one machine is picked", async () => {
     setup();
     await using _screen = await mountPanel({ machine: primaryId });

@@ -136,6 +136,7 @@ function deriveLogicalProjectKey(
     readonly groupScratchProjects?: boolean;
   },
 ): string {
+  if (project.id === "codex-unassigned-history") return derivePhysicalProjectKey(project);
   if (options?.groupScratchProjects && project.isScratch) return SCRATCH_PROJECT_SCOPE_KEY;
   const groupingMode = options?.groupingMode ?? "repository";
   if (groupingMode === "separate") {

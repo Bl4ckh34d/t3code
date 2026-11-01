@@ -81,6 +81,15 @@ function createSettingsRouter(initialEntry = "/settings/general") {
 }
 
 describe("settings scope navigation", () => {
+  it("retains an archive provider on reload while keeping its machine explicit", () => {
+    expect(
+      validateSettingsRouteSearch({ machine: "test-machine", archiveProvider: "codex-work" }),
+    ).toEqual({
+      machine: "test-machine",
+      archiveProvider: "codex-work",
+    });
+    expect(validateSettingsRouteSearch({ archiveProvider: "  " })).toEqual({});
+  });
   it("clears a checkout when selecting all environments and all projects", async () => {
     const router = createSettingsRouter();
     await router.navigate({ to: "/settings/general", search: checkoutSearch, hash: "old-setting" });

@@ -977,6 +977,23 @@ export function sidebarFolderExpansionKeys(group: {
   ];
 }
 
+export function resolveSidebarProviderFolders<
+  T extends { group: { id: string; displayName: string } },
+>(folders: readonly T[], driverKind: string | undefined): readonly T[] {
+  if (driverKind !== "codex") return folders;
+  return folders
+    .map((folder) =>
+      folder.group.id === "codex-unassigned-history"
+        ? { ...folder, group: { ...folder.group, displayName: "Letzte" } }
+        : folder,
+    )
+    .toSorted(
+      (left, right) =>
+        Number(right.group.id === "codex-unassigned-history") -
+        Number(left.group.id === "codex-unassigned-history"),
+    );
+}
+
 /**
  * Boring sidebar folders. Folders follow `groups` order and threads keep their
  * input order. A project with no threads gets a folder only when `keepEmpty` says so.
@@ -991,12 +1008,14 @@ export function groupSidebarThreadsByProject<
   },
   TThread extends Pick<SidebarThreadSummary, "environmentId" | "projectId"> & {
     readonly organizationProjectId?: string | null | undefined;
+    readonly providerInstanceId?: string;
   },
 >(
   groups: readonly TGroup[],
   threads: readonly TThread[],
   keepEmpty: (group: TGroup) => boolean,
-): Array<{ group: TGroup; threads: TThread[] }> {
+  emptyProvider?: (group: TGroup) => string,
+): Array<{ group: TGroup & { sidebarProviderInstanceId?: string }; threads: TThread[] }> {
   const folders = groups.map((group) => ({ group, threads: [] as TThread[] }));
   const folderByProject = new Map<string, (typeof folders)[number]>();
   for (const folder of folders) {
@@ -1011,7 +1030,21 @@ export function groupSidebarThreadsByProject<
       folderByProject.get(key) ?? folderByProject.get(`${thread.environmentId}:${thread.projectId}`)
     )?.threads.push(thread);
   }
-  return folders.filter((folder) => folder.threads.length > 0 || keepEmpty(folder.group));
+  const retained = folders.filter((folder) => folder.threads.length > 0 || keepEmpty(folder.group));
+  if (!emptyProvider) return retained;
+  return retained.flatMap((folder) => {
+    const providers = new Set(
+      folder.threads.map((thread) => thread.providerInstanceId ?? emptyProvider(folder.group)),
+    );
+    if (providers.size === 0) providers.add(emptyProvider(folder.group));
+    return [...providers].map((providerInstanceId) => ({
+      group: { ...folder.group, sidebarProviderInstanceId: providerInstanceId },
+      threads: folder.threads.filter(
+        (thread) =>
+          (thread.providerInstanceId ?? emptyProvider(folder.group)) === providerInstanceId,
+      ),
+    }));
+  });
 }
 
 export type SidebarV2TopStatusKind =
@@ -1404,6 +1437,13 @@ export function sortSidebarV2ProjectGroups<
     filterSidebarV2VisibleThreads(threads, null, delegatedUnderParent),
     sortOrder,
   );
+}
+
+export function codexOrganizationFailureMessage(error: unknown): string {
+  const message = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+  if (message === "Unknown request tag: agentSessions.organize")
+    return "Update this environment's T3 server to organize Codex projects and chats.";
+  return message.trim() || "Codex did not confirm the change. Check the environment connection.";
 }
 
 export function sortScopedProjectsForSidebar<

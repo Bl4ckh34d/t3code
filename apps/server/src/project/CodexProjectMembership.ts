@@ -1,9 +1,11 @@
 import {
   CodexSettings,
+  CODEX_PROJECT_RENAME_DISABLED_MESSAGE,
   CommandId,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
+  type AgentSessionOrganizeInput,
 } from "@t3tools/contracts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -23,19 +25,28 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import {
+  desktopBridge,
+  requestDesktopPipe,
+  CodexDesktopUnavailable,
+} from "./CodexDesktopBridge.ts";
 
 const NativeProject = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
-  roots: Schema.Array(Schema.Struct({ path: Schema.String })),
+  roots: Schema.Array(
+    Schema.StructWithRest(Schema.Struct({ path: Schema.String }), [
+      Schema.Record(Schema.String, Schema.Unknown),
+    ]),
+  ),
   metadata: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  updatedAt: Schema.optionalKey(Schema.Number),
 });
 const ProjectPage = Schema.Struct({
   data: Schema.Array(NativeProject),
   nextCursor: Schema.optional(Schema.NullOr(Schema.String)),
 });
 const decodeProjectPage = Schema.decodeUnknownEffect(ProjectPage);
-const decodeImportedProject = Schema.decodeUnknownEffect(Schema.Struct({ project: NativeProject }));
 const decodeSettings = Schema.decodeEffect(CodexSettings);
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 const ThreadPage = Schema.Struct({
@@ -50,7 +61,12 @@ const ThreadPage = Schema.Struct({
 });
 const decodeThreadPage = Schema.decodeUnknownEffect(ThreadPage);
 // Codex defaults to interactive sources, which omits historical exec chats.
-export const CODEX_SYNC_THREAD_SOURCES = ["cli", "vscode", "exec", "appServer", "unknown"] as const;
+const CODEX_SYNC_THREAD_SOURCES = ["cli", "vscode", "exec", "appServer", "unknown"] as const;
+export const CODEX_SYNC_THREAD_LIST_PARAMS = {
+  sourceKinds: CODEX_SYNC_THREAD_SOURCES,
+  modelProviders: [],
+  limit: 100,
+};
 export type RawClient = CodexClient.CodexAppServerClient["Service"]["raw"];
 export const request = (raw: Pick<RawClient, "request">, method: string, params: unknown) =>
   raw.request(method, params).pipe(Effect.timeout("30 seconds"));
@@ -128,6 +144,12 @@ export function pendingCodexMembership(
 }
 
 const DesktopSidebar = Schema.Struct({
+  "thread-project-assignments": Schema.optional(
+    Schema.Record(
+      Schema.String,
+      Schema.Struct({ projectKind: Schema.String, projectId: Schema.String }),
+    ),
+  ),
   "app-server-project-id-by-legacy-project-id-by-host": Schema.Record(
     Schema.String,
     Schema.Record(Schema.String, Schema.String),
@@ -158,6 +180,8 @@ export function codexDesktopSidebar(state: unknown, homePath: string) {
   >();
   const projectIds: string[] = [];
   const threadIds: string[] = [];
+  const projectThreadIds = new Map<string, readonly string[]>();
+  const threadProjectIds = new Map<string, string>();
   const decoded = decodeDesktopSidebar(state);
   if (Option.isSome(decoded)) {
     const data = decoded.value;
@@ -170,6 +194,10 @@ export function codexDesktopSidebar(state: unknown, homePath: string) {
     const mapping = host
       ? (data["app-server-project-id-by-legacy-project-id-by-host"][host] ?? {})
       : {};
+    for (const [threadId, assignment] of Object.entries(data["thread-project-assignments"] ?? {})) {
+      const project = mapping[assignment.projectId];
+      if (assignment.projectKind === "local" && project) threadProjectIds.set(threadId, project);
+    }
     for (const legacy of [
       ...(data["project-order"] ?? []),
       ...Object.keys(data["local-projects"]),
@@ -179,10 +207,18 @@ export function codexDesktopSidebar(state: unknown, homePath: string) {
       if (!id || !project || projects.has(id)) continue;
       projects.set(id, project);
       projectIds.push(id);
-      threadIds.push(...(data["sidebar-project-thread-orders"]?.[legacy]?.threadIds ?? []));
+      const order = data["sidebar-project-thread-orders"]?.[legacy]?.threadIds ?? [];
+      projectThreadIds.set(id, order);
+      threadIds.push(...order);
     }
   }
-  return { projects, projectIds, threadIds: [...new Set(threadIds)] };
+  return {
+    projects,
+    projectIds,
+    threadIds: [...new Set(threadIds)],
+    projectThreadIds,
+    threadProjectIds,
+  };
 }
 
 const readCodexDesktopState = Effect.fn("readCodexDesktopState")(function* (homePath: string) {
@@ -246,7 +282,13 @@ export const connect = Effect.fn("CodexProjectMembership.connect")(function* (
     cwd: yield* HostProcess.HomeDirectory,
     environment,
   });
-  return { ...connection, homePath: layout.sharedHomePath };
+  return {
+    ...connection,
+    homePath: layout.sharedHomePath,
+    desktop: desktopBridge(
+      requestDesktopPipe(config.desktopPipePath || environment.CODEX_APP_TOOLS_PIPE_PATH || ""),
+    ),
+  };
 });
 
 export function incomingCodexTitle(local: string, remote: string | null | undefined) {
@@ -280,11 +322,27 @@ export const pullCodexMembership = Effect.fn("pullCodexMembership")(function* (
   const nativeProjects = yield* readCodexProjects(raw);
   const mapping = new Map<string, ProjectId>();
   let mappingErrors = 0;
+  let desktopRefreshRequired = false;
   for (const entry of nativeProjects) {
     const desktop = sidebar.projects.get(entry.id);
-    const native = desktop
-      ? { ...entry, name: desktop.name, roots: desktop.rootPaths.map((path) => ({ path })) }
-      : entry;
+    if (
+      desktop &&
+      (desktop.name !== entry.name ||
+        desktop.rootPaths.length !== entry.roots.length ||
+        entry.roots.some(
+          (root) =>
+            !desktop.rootPaths.some(
+              (path) =>
+                normalizeProjectPathForComparison(path) ===
+                normalizeProjectPathForComparison(root.path),
+            ),
+        ))
+    )
+      desktopRefreshRequired = true;
+    const native =
+      desktop && entry.updatedAt === undefined
+        ? { ...entry, name: desktop.name, roots: desktop.rootPaths.map((path) => ({ path })) }
+        : entry;
     yield* Effect.gen(function* () {
       const linkedId = native.metadata?.["t3code.projectId"];
       let local = linkedId ? yield* projects.getById(ProjectId.make(linkedId)) : Option.none();
@@ -344,14 +402,20 @@ export const pullCodexMembership = Effect.fn("pullCodexMembership")(function* (
     do {
       const page = yield* decodeThreadPage(
         yield* request(raw, "thread/list", {
-          limit: 100,
+          ...CODEX_SYNC_THREAD_LIST_PARAMS,
           archived,
           sortKey: "updated_at",
-          sourceKinds: CODEX_SYNC_THREAD_SOURCES,
           ...(cursor ? { cursor } : {}),
         }),
       );
       for (const native of page.data) {
+        if (
+          owners.has(native.id) &&
+          sidebar.threadProjectIds.has(native.id) &&
+          sidebar.threadProjectIds.get(native.id) !== native.projectId &&
+          !pendingMembership.has(native.id)
+        )
+          desktopRefreshRequired = true;
         listedThreadIds.push(native.id);
         let nativeProjectId = native.projectId;
         const pendingProjectId = pendingMembership.get(native.id);
@@ -398,6 +462,7 @@ export const pullCodexMembership = Effect.fn("pullCodexMembership")(function* (
     });
   return {
     updated,
+    desktopRefreshRequired,
     projectIds: [
       ...new Set(
         [...sidebar.projectIds, ...nativeProjects.map((project) => project.id)].flatMap(
@@ -415,17 +480,24 @@ export const synchronizeCodexMembership = Effect.fn("synchronizeCodexMembership"
   instanceId: ProviderInstanceId,
 ) {
   const { client, homePath } = yield* connect(instanceId);
-  return yield* pullCodexMembership(
+  const result = yield* pullCodexMembership(
     instanceId,
     client.raw,
     yield* readCodexDesktopState(homePath),
     homePath,
   );
+  if (result.desktopRefreshRequired)
+    return yield* new MembershipError({
+      message:
+        "Codex storage and the Codex desktop sidebar disagree. Desktop synchronization is incomplete.",
+    });
+  return result;
 });
 
 export const moveCodexMembership = Effect.fn("moveCodexMembership")(function* (
   threadId: ThreadId,
   projectId: ProjectId,
+  beforeThreadId?: ThreadId,
 ) {
   const crypto = yield* Crypto.Crypto;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -446,31 +518,155 @@ export const moveCodexMembership = Effect.fn("moveCodexMembership")(function* (
         DateTime.toEpochMillis(b.createdAt) - DateTime.toEpochMillis(a.createdAt) ||
         b.id.localeCompare(a.id),
     )[0];
+  let sidebarOrder = {
+    projectIds: [] as ProjectId[],
+    threadIds: [] as ThreadId[],
+    desktopRefreshRequired: false,
+  };
   for (const providerThread of preferred ? [preferred] : []) {
-    if (!providerThread.nativeThreadRef) continue;
-    const { client } = yield* connect(providerThread.providerInstanceId);
+    const nativeId = providerThread.nativeThreadRef?.nativeId;
+    if (!nativeId)
+      return yield* new MembershipError({ message: "The Codex chat has no native identifier." });
+    const { client, desktop, homePath } = yield* connect(providerThread.providerInstanceId);
+    yield* desktop.requireTool("move_thread_to_project");
     const nativeProjects = yield* readCodexProjects(client.raw);
-    let native =
+    const native =
       nativeProjects.find((entry) => entry.metadata?.["t3code.projectId"] === projectId) ??
-      nativeProjects.find(
-        (entry) =>
-          entry.roots[0] !== undefined &&
-          normalizeProjectPathForComparison(entry.roots[0].path) ===
+      nativeProjects.find((entry) =>
+        entry.roots.some(
+          (root) =>
+            normalizeProjectPathForComparison(root.path) ===
             normalizeProjectPathForComparison(target.value.workspaceRoot),
+        ),
       );
     if (!native) {
-      const response = yield* request(client.raw, "project/import", {
-        idempotencyKey: `t3:${projectId}`,
-        name: target.value.title,
-        roots: [{ path: target.value.workspaceRoot }],
-        metadata: { "t3code.projectId": projectId },
+      return yield* new MembershipError({
+        message: "Synchronize this project from Codex before moving chats into it.",
       });
-      native = (yield* decodeImportedProject(response)).project;
     }
-    yield* request(client.raw, "thread/metadata/update", {
-      threadId: providerThread.nativeThreadRef.nativeId,
-      projectId: native.id,
-    });
+    const position = yield* request(client.raw, "thread/read", {
+      threadId: nativeId,
+      includeTurns: false,
+    }).pipe(
+      Effect.flatMap(
+        Schema.decodeUnknownEffect(
+          Schema.Struct({
+            thread: Schema.Struct({ projectId: Schema.NullOr(Schema.String), cwd: Schema.String }),
+          }),
+        ),
+      ),
+    );
+    const sameProject = position.thread.projectId === native.id;
+    let beforeNativeId: string | undefined;
+    if (beforeThreadId) {
+      const before = yield* orchestrator.getThreadRecords(beforeThreadId, ["providerThreads"]);
+      const ref = before.providerThreads.find(
+        (entry) =>
+          entry.driver === "codex" &&
+          entry.providerInstanceId === providerThread.providerInstanceId &&
+          entry.nativeThreadRef !== null,
+      );
+      if (!ref?.nativeThreadRef?.nativeId)
+        return yield* new MembershipError({
+          message: "The destination chat is not part of this Codex connection.",
+        });
+      beforeNativeId = ref.nativeThreadRef.nativeId;
+    }
+    if (beforeThreadId || sameProject) {
+      yield* desktop.call("update_sidebar_preferences", nativeId, { sorting: { chats: "manual" } });
+    }
+    const destinationId = yield* desktopProjectId(native.id, homePath);
+    const append = sameProject && !beforeNativeId;
+    if (append) {
+      const order =
+        codexDesktopSidebar(yield* readCodexDesktopState(homePath), homePath).projectThreadIds.get(
+          native.id,
+        ) ?? [];
+      const index = order.indexOf(nativeId);
+      if (index < 0)
+        return yield* new MembershipError({
+          message: "Synchronize the Codex sidebar order before reordering this chat.",
+        });
+      // Codex leaves same-project moves without an insertion anchor in place.
+      for (const peer of order.slice(index + 1)) {
+        yield* desktop.call("move_thread_to_project", nativeId, {
+          threadId: peer,
+          projectId: destinationId,
+          beforeThreadId: nativeId,
+        });
+      }
+    } else {
+      const confirmation = yield* desktop
+        .call("move_thread_to_project", nativeId, {
+          threadId: nativeId,
+          projectId: destinationId,
+          ...(beforeNativeId ? { beforeThreadId: beforeNativeId } : {}),
+        })
+        .pipe(
+          Effect.catchTags({
+            CodexDesktopUnavailable: (error) =>
+              error.moveConfirmation ? Effect.succeed(error.moveConfirmation) : Effect.fail(error),
+          }),
+        );
+      if (confirmation)
+        return {
+          projectIds: [] as ProjectId[],
+          threadIds: [] as ThreadId[],
+          moveConfirmation: { threadId, projectId, ...confirmation },
+        };
+    }
+    const desktopState = yield* readCodexDesktopState(homePath);
+    if (codexDesktopSidebar(desktopState, homePath).threadProjectIds.get(nativeId) !== native.id)
+      return yield* new MembershipError({
+        message: "Codex desktop did not confirm the project assignment. T3 was not updated.",
+      });
+    if (!sameProject) {
+      yield* request(client.raw, "thread/metadata/update", {
+        threadId: nativeId,
+        projectId: native.id,
+      });
+      const readback = yield* request(client.raw, "thread/read", {
+        threadId: nativeId,
+        includeTurns: false,
+      }).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.Struct({
+              thread: Schema.Struct({ projectId: Schema.NullOr(Schema.String) }),
+            }),
+          ),
+        ),
+      );
+      if (readback.thread.projectId !== native.id)
+        return yield* new MembershipError({
+          message: "Codex did not confirm the chat move. T3 was not updated.",
+        });
+    }
+    if (
+      append &&
+      codexDesktopSidebar(desktopState, homePath).projectThreadIds.get(native.id)?.at(-1) !==
+        nativeId
+    )
+      return yield* new MembershipError({
+        message: "Codex did not confirm the requested chat order. T3 was not updated.",
+      });
+    sidebarOrder = yield* pullCodexMembership(
+      providerThread.providerInstanceId,
+      client.raw,
+      desktopState,
+      homePath,
+    );
+    if (beforeThreadId) {
+      const threadIds = sidebarOrder.threadIds.filter((id) => id !== threadId);
+      const index = threadIds.indexOf(beforeThreadId);
+      if (index < 0)
+        return yield* new MembershipError({
+          message: "Synchronize the Codex sidebar before positioning this chat.",
+        });
+      // Codex acknowledges sidebar edits before its state file is flushed.
+      threadIds.splice(index, 0, threadId);
+      sidebarOrder = { ...sidebarOrder, threadIds };
+    }
   }
   yield* orchestrator.dispatch({
     type: "thread.metadata.update",
@@ -478,4 +674,128 @@ export const moveCodexMembership = Effect.fn("moveCodexMembership")(function* (
     threadId,
     organizationProjectId: projectId,
   });
+  return sidebarOrder;
+});
+
+const desktopProjectId = Effect.fn("desktopProjectId")(function* (
+  nativeId: string,
+  homePath: string,
+) {
+  const state = decodeDesktopSidebar(yield* readCodexDesktopState(homePath));
+  if (Option.isSome(state)) {
+    for (const [host, mapping] of Object.entries(
+      state.value["app-server-project-id-by-legacy-project-id-by-host"],
+    )) {
+      if (
+        host.startsWith("local:") &&
+        normalizeProjectPathForComparison(host.slice(6)) ===
+          normalizeProjectPathForComparison(homePath)
+      ) {
+        return Object.entries(mapping).find(([, id]) => id === nativeId)?.[0] ?? nativeId;
+      }
+    }
+  }
+  return nativeId;
+});
+
+export const organizeCodex = Effect.fn("organizeCodex")(function* (
+  input: AgentSessionOrganizeInput,
+) {
+  if (input.action === "rename-project")
+    return yield* new CodexDesktopUnavailable({ message: CODEX_PROJECT_RENAME_DISABLED_MESSAGE });
+  if (input.action === "move-thread")
+    return yield* moveCodexMembership(input.threadId, input.projectId, input.beforeThreadId);
+  const settings = yield* (yield* ServerSettings.ServerSettingsService).getSettings;
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const projects = yield* ProjectService.ProjectService;
+  const crypto = yield* Crypto.Crypto;
+  if (input.action === "rename-thread") {
+    const records = yield* orchestrator.getThreadRecords(input.threadId, ["providerThreads"]);
+    const native =
+      records.providerThreads.find(
+        (entry) => entry.id === records.thread.activeProviderThreadId && entry.driver === "codex",
+      ) ??
+      records.providerThreads.find(
+        (entry) => entry.driver === "codex" && entry.nativeThreadRef !== null,
+      );
+    if (native?.nativeThreadRef?.nativeId) {
+      const { desktop } = yield* connect(native.providerInstanceId);
+      yield* desktop.call("set_thread_title", native.nativeThreadRef.nativeId, {
+        threadId: native.nativeThreadRef.nativeId,
+        title: input.title,
+      });
+    }
+    yield* orchestrator.dispatch({
+      type: "thread.metadata.update",
+      commandId: CommandId.make(`codex-rename:${yield* crypto.randomUUIDv4()}`),
+      threadId: input.threadId,
+      title: input.title,
+    });
+    return { projectIds: [] as ProjectId[], threadIds: [] as ThreadId[] };
+  }
+  const instanceId =
+    input.providerInstanceId ??
+    ProviderInstanceId.make(
+      Object.entries(settings.providerInstances).find(
+        ([, instance]) => instance.driver === "codex" && instance.enabled !== false,
+      )?.[0] ?? "codex",
+    );
+  if (
+    input.providerInstanceId &&
+    (settings.providerInstances[instanceId]?.driver !== "codex" ||
+      settings.providerInstances[instanceId]?.enabled === false)
+  )
+    return yield* new MembershipError({ message: "The selected Codex provider is unavailable." });
+  const { client, desktop, homePath } = yield* connect(instanceId);
+  yield* desktop.requireTool("list_projects");
+  const nativeProjects = yield* readCodexProjects(client.raw);
+  const findProject = Effect.fn("organizeCodex.findProject")(function* (id: ProjectId) {
+    const local = yield* projects.getById(id);
+    if (Option.isNone(local) || local.value.deletedAt !== null)
+      return yield* new MembershipError({ message: "The project no longer exists." });
+    const native =
+      nativeProjects.find((entry) => entry.metadata?.["t3code.projectId"] === id) ??
+      nativeProjects.find((entry) =>
+        entry.roots.some(
+          (root) =>
+            normalizeProjectPathForComparison(root.path) ===
+            normalizeProjectPathForComparison(local.value.workspaceRoot),
+        ),
+      );
+    return native;
+  });
+  {
+    const orderedProjects = yield* Effect.forEach(input.projectIds, findProject);
+    const ids = yield* Effect.forEach(
+      orderedProjects.flatMap((native) => (native ? [native] : [])),
+      (native) => desktopProjectId(native.id, homePath),
+    );
+    if (ids.length === 0)
+      return yield* new MembershipError({
+        message: "Synchronize projects from Codex before organizing them in T3.",
+      });
+    const owners = yield* readCodexThreadOwners(instanceId);
+    const caller = owners.keys().next().value;
+    if (!caller)
+      return yield* new MembershipError({
+        message: "Synchronize a Codex chat before organizing projects in T3.",
+      });
+    yield* desktop.call("reorder_sidebar_projects", caller, { projectIds: ids });
+  }
+  const order = yield* pullCodexMembership(
+    instanceId,
+    client.raw,
+    yield* readCodexDesktopState(homePath),
+    homePath,
+  );
+  if (input.action === "reorder-projects") {
+    const confirmed = [...new Set(input.projectIds)].filter((id) => order.projectIds.includes(id));
+    const included = new Set(confirmed);
+    let index = 0;
+    return {
+      ...order,
+      projectIds: order.projectIds.map((id) => (included.has(id) ? confirmed[index++]! : id)),
+    };
+  }
+  return order;
 });

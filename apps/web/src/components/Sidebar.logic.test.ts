@@ -37,6 +37,8 @@ import {
   groupSidebarThreadsByProject,
   resolveSidebarFolderDot,
   sidebarFolderExpansionKeys,
+  codexOrganizationFailureMessage,
+  resolveSidebarProviderFolders,
 } from "./Sidebar.logic";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
@@ -61,6 +63,15 @@ import {
 } from "./sidebar/routeReveal";
 
 const localEnvironmentId = EnvironmentId.make("environment-local");
+
+it("reports an unsupported organization RPC as an outdated T3 server", () => {
+  expect(codexOrganizationFailureMessage("Unknown request tag: agentSessions.organize")).toMatch(
+    /[Uu]pdate.*T3 server/,
+  );
+  const rejected = new Error("Codex desktop rejected the change.");
+  expect(codexOrganizationFailureMessage(rejected)).toBe(rejected.message);
+  expect(codexOrganizationFailureMessage(null)).not.toContain("Connect Codex desktop");
+});
 
 describe("deleteSelectedThreadEntries", () => {
   const entries = [{ threadKey: "one" }, { threadKey: "two" }, { threadKey: "three" }] as const;
@@ -1609,6 +1620,73 @@ describe("sidebarFolderExpansionKeys", () => {
 });
 
 describe("groupSidebarThreadsByProject", () => {
+  it("puts unassigned Codex chats in Letzte before project folders without reordering the projects", () => {
+    const folders = ["b", "codex-unassigned-history", "a"].map((id) => ({
+      group: { id, displayName: id },
+      threads: [id],
+    }));
+    const result = resolveSidebarProviderFolders(folders, "codex");
+    expect(result.map((folder) => [folder.group.displayName, ...folder.threads])).toEqual([
+      ["Letzte", "codex-unassigned-history"],
+      ["b", "b"],
+      ["a", "a"],
+    ]);
+    expect(resolveSidebarProviderFolders(folders, "claudeAgent")).toBe(folders);
+    expect(folders[1]?.group.displayName).toBe("codex-unassigned-history");
+  });
+  it("keeps each provider's chats in its own project branch on the same machine", () => {
+    const projectId = ProjectId.make("shared-checkout");
+    const groups = [
+      {
+        projectKey: "shared",
+        memberProjectRefs: [{ environmentId: localEnvironmentId, projectId }],
+      },
+    ];
+    const threads = [
+      {
+        id: "codex-old",
+        environmentId: localEnvironmentId,
+        projectId,
+        providerInstanceId: "codex",
+      },
+      {
+        id: "claude",
+        environmentId: localEnvironmentId,
+        projectId,
+        providerInstanceId: "claudeAgent",
+      },
+      {
+        id: "codex-new",
+        environmentId: localEnvironmentId,
+        projectId,
+        providerInstanceId: "codex",
+      },
+    ];
+    const result = groupSidebarThreadsByProject(
+      groups,
+      threads,
+      () => true,
+      () => "codex",
+    );
+    expect(
+      result.map((folder) => ({
+        provider: folder.group.sidebarProviderInstanceId,
+        ids: folder.threads.map((thread) => thread.id),
+      })),
+    ).toEqual([
+      { provider: "codex", ids: ["codex-old", "codex-new"] },
+      { provider: "claudeAgent", ids: ["claude"] },
+    ]);
+    expect(
+      groupSidebarThreadsByProject(
+        groups,
+        [],
+        () => true,
+        () => "codex",
+      )[0]?.group.sidebarProviderInstanceId,
+    ).toBe("codex");
+    expect(groups[0]).not.toHaveProperty("sidebarProviderInstanceId");
+  });
   it("groups by organization without changing the execution project", () => {
     const projectId = ProjectId.make("execution");
     const organizationProjectId = ProjectId.make("organization");

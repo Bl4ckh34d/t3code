@@ -25,10 +25,10 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { readLocalApi } from "~/localApi";
-import { threadEnvironment } from "../../state/threads";
+import { agentSessionOrganize } from "../../state/agentSessions";
 import { canShareWithGuestAtom } from "./guestShareAvailability";
 import { useAtomValue } from "@effect/atom-react";
-import { useOrchestrationCommand } from "../../state/use-orchestration-command";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
 import { ProjectFavicon } from "../ProjectFavicon";
 import {
@@ -95,7 +95,7 @@ export const ChatHeader = memo(function ChatHeader({
     AuthOrchestrationOperateScope,
   );
   const canShareWithGuest = useAtomValue(canShareWithGuestAtom(activeThreadEnvironmentId));
-  const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
+  const updateThreadMetadata = useAtomCommand(agentSessionOrganize, {
     reportFailure: false,
   });
   const [renaming, setRenaming] = useState<{
@@ -183,7 +183,7 @@ export const ChatHeader = memo(function ChatHeader({
     if (resolution.action === "noop") return;
     void updateThreadMetadata({
       environmentId: activeThreadEnvironmentId,
-      input: { threadId: activeThreadId, title: resolution.title },
+      input: { action: "rename-thread", threadId: activeThreadId, title: resolution.title },
     }).then((result) => {
       if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);

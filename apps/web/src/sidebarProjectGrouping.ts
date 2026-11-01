@@ -15,6 +15,7 @@ export interface SidebarProjectGroupMember extends Project {
 }
 
 export interface SidebarProjectSnapshot extends Project {
+  sidebarProviderInstanceId?: string;
   projectKey: string;
   displayName: string;
   groupedProjectCount: number;

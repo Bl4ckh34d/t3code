@@ -34,10 +34,26 @@ import * as ProjectFaviconResolver from "./ProjectFaviconResolver.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as RepositoryIdentityResolver from "./RepositoryIdentityResolver.ts";
 
-const layerWorkspacePaths = Layer.succeed(WorkspacePaths.WorkspacePaths, {
-  normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot.replace(/\/$/, "")),
-  resolveRelativePathWithinRoot: ({ workspaceRoot, relativePath }) =>
-    Effect.succeed({ absolutePath: `${workspaceRoot}/${relativePath}`, relativePath }),
+const layerWorkspacePaths = Layer.sync(WorkspacePaths.WorkspacePaths, () => {
+  const created = new Set<string>();
+  return WorkspacePaths.WorkspacePaths.of({
+    normalizeWorkspaceRoot: (workspaceRoot, options) => {
+      const normalized = workspaceRoot.replace(/\/$/, "");
+      if (normalized.startsWith("/missing/") && !created.has(normalized)) {
+        if (!options?.createIfMissing)
+          return Effect.fail(
+            new WorkspacePaths.WorkspaceRootNotExistsError({
+              workspaceRoot,
+              normalizedWorkspaceRoot: normalized,
+            }),
+          );
+        created.add(normalized);
+      }
+      return Effect.succeed(normalized);
+    },
+    resolveRelativePathWithinRoot: ({ workspaceRoot, relativePath }) =>
+      Effect.succeed({ absolutePath: `${workspaceRoot}/${relativePath}`, relativePath }),
+  });
 });
 
 const layerMetadata = Layer.merge(
@@ -280,7 +296,8 @@ it.layer(layerTest)("ProjectService", (it) => {
         commandId: CommandId.make("command:bootstrap:first"),
         projectId: ProjectId.make("project:bootstrap"),
         title: "Bootstrap",
-        workspaceRoot: "/work/bootstrap/",
+        workspaceRoot: "/missing/bootstrap/",
+        createWorkspaceRootIfMissing: true,
       };
       const first = yield* service.bootstrap(input);
       const second = yield* service.bootstrap({

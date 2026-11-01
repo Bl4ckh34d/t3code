@@ -1,7 +1,8 @@
 import { settingsScopeEnvironmentLabels } from "./settingsScopeAxis";
+import { useSearch } from "@tanstack/react-router";
 import { Spinner } from "~/components/ui/spinner";
 import { ArchiveIcon, ArchiveX } from "lucide-react";
-import { type ScopedThreadRef } from "@t3tools/contracts";
+import { ProviderInstanceId, type ScopedThreadRef } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { presentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
@@ -21,7 +22,15 @@ import { searchableSetting } from "./settingsSearch";
 import { ProjectFavicon } from "../ProjectFavicon";
 
 export function ArchivedThreadsPanel() {
+  const archiveProvider = useSearch({ strict: false, select: (search) => search.archiveProvider });
   const { scope, groups: projectGroups, environments } = useSettingsScope();
+  const providerLabel =
+    archiveProvider === undefined
+      ? null
+      : (environments.find((environment) =>
+          scope.environmentIds.includes(environment.environmentId),
+        )?.serverConfig?.settings.providerInstances[ProviderInstanceId.make(archiveProvider)]
+          ?.displayName ?? "Codex");
   const { unarchiveThread, confirmAndDeleteThread } = useThreadActions();
   const {
     snapshots: archivedSnapshots,
@@ -55,10 +64,15 @@ export function ArchivedThreadsPanel() {
       }),
     );
     const threads = archivedSnapshots.flatMap(({ environmentId, snapshot }) =>
-      snapshot.threads.map((thread) => ({
-        ...presentThreadShell(environmentId, thread),
-        environmentLabel: environmentLabels.get(environmentId) ?? environmentId,
-      })),
+      snapshot.threads
+        .filter(
+          (thread) =>
+            archiveProvider === undefined || thread.providerInstanceId === archiveProvider,
+        )
+        .map((thread) => ({
+          ...presentThreadShell(environmentId, thread),
+          environmentLabel: environmentLabels.get(environmentId) ?? environmentId,
+        })),
     );
     const hasMultipleEnvironments =
       new Set(
@@ -172,6 +186,9 @@ export function ArchivedThreadsPanel() {
 
   return (
     <SettingsPageContainer>
+      {providerLabel ? (
+        <p className="text-sm text-muted-foreground">Archiv · {providerLabel}</p>
+      ) : null}
       {archivedGroups.length === 0 ? (
         <SettingsSection
           id={isLoadingArchive ? undefined : searchableSetting("archive").id}

@@ -91,6 +91,22 @@ const repositoryIdentity = {
   displayName: "T3 Code",
 };
 
+it("keeps unassigned Codex history separate from its enclosing repository", () => {
+  const root = makeProject("repository", "/repo", { repositoryIdentity });
+  const history = makeProject("codex-unassigned-history", "/repo/.t3/projects/history", {
+    repositoryIdentity,
+    title: "Unassigned Codex chats",
+  });
+  const groups = buildProjectGroups({
+    projects: [root, history],
+    settings: settings("repository"),
+  });
+  expect(groups).toHaveLength(2);
+  expect(
+    groups.find((group) => group.members.some((member) => member.project.id === history.id))?.label,
+  ).toBe("Unassigned Codex chats");
+});
+
 function makeProject(
   id: string,
   workspaceRoot: string,

@@ -11,6 +11,23 @@ import {
 
 const stationary = { x: 0, y: 0, scaleX: 1, scaleY: 1 };
 const hidden = { ...stationary, scaleY: 0 };
+
+export function projectThreadDropBefore<TId>(
+  threadIds: readonly TId[],
+  source: TId,
+  target: TId,
+  placement: "before" | "after",
+  eligibleThreadIds?: ReadonlySet<TId>,
+) {
+  const peers = threadIds.filter((id) => id !== source);
+  const index = peers.indexOf(target);
+  return index < 0
+    ? undefined
+    : peers
+        .slice(index + (placement === "after" ? 1 : 0))
+        .find((id) => !eligibleThreadIds || eligibleThreadIds.has(id));
+}
+
 type ThreadItem = Extract<SidebarListItem, { kind: "thread" }>;
 type Layout = Parameters<SortingStrategy>[0];
 const isShelfHeader = (item: SidebarListItem | undefined) =>
