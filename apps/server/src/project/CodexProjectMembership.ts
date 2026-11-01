@@ -133,6 +133,7 @@ const decodeDesktopMigration = Schema.decodeUnknownOption(DesktopMigration);
 export function pendingCodexMembership(
   state: unknown,
   homePath: string,
+  projectIds: "native" | "desktop" = "native",
 ): ReadonlyMap<string, string | null> {
   const decoded = decodeDesktopMigration(state);
   const result = new Map<string, string | null>();
@@ -153,7 +154,10 @@ export function pendingCodexMembership(
     const assignment = data["thread-project-assignments"][id];
     if (projectless.has(id)) result.set(id, null);
     else if (assignment?.projectKind === "local" && mapping[assignment.projectId])
-      result.set(id, mapping[assignment.projectId]!);
+      result.set(
+        id,
+        projectIds === "native" ? mapping[assignment.projectId]! : assignment.projectId,
+      );
   }
   return result;
 }
@@ -513,9 +517,10 @@ export const pullCodexMembership = Effect.fn("pullCodexMembership")(function* (
             desktopRefreshRequired = true;
           listedThreadIds.push(native.id);
           let nativeProjectId = native.projectId;
-          const pendingProjectId = desktopMembership.has(native.id)
-            ? desktopMembership.get(native.id)
-            : pendingMembership.get(native.id);
+          // Desktop history reports null until its pending project migration commits.
+          const pendingProjectId = pendingMembership.has(native.id)
+            ? pendingMembership.get(native.id)
+            : desktopMembership.get(native.id);
           if (pendingProjectId !== undefined) {
             nativeProjectId = pendingProjectId;
           }

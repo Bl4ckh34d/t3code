@@ -10,7 +10,11 @@ import { desktopBridge } from "./CodexDesktopBridge.ts";
 import { readCodexDesktopSources } from "./CodexDesktopSources.ts";
 
 const stubs = vi.hoisted(() => ({ connect: vi.fn() }));
-vi.mock("./CodexProjectMembership.ts", () => ({ connect: () => stubs.connect() }));
+vi.mock("./CodexProjectMembership.ts", async (importOriginal) => {
+  const { pendingCodexMembership } =
+    await importOriginal<typeof import("./CodexProjectMembership.ts")>();
+  return { connect: () => stubs.connect(), pendingCodexMembership };
+});
 
 it.effect(
   "reads every connected Codex host and keeps desktop project membership across pages",
@@ -59,7 +63,11 @@ it.effect(
                       {
                         id: call.arguments.cursor ? "older" : "recent",
                         projectId:
-                          call.arguments.hostId === "local" ? "local-project" : "remote-project",
+                          call.arguments.hostId === "local"
+                            ? call.arguments.cursor
+                              ? "local-project"
+                              : null
+                            : "remote-project",
                       },
                     ],
                 nextCursor: call.arguments.archived || call.arguments.cursor ? null : "older",
@@ -89,7 +97,10 @@ it.effect(
           hostId: "local",
           sshAlias: null,
           projects: [{ id: "local-project" }],
-          assignments: [{ threadId: "recent" }, { threadId: "older" }],
+          assignments: [
+            { threadId: "recent", projectId: "local-project" },
+            { threadId: "older", projectId: null },
+          ],
         },
         {
           hostId: "ssh:server",
@@ -112,6 +123,19 @@ it.effect(
                     "codex-managed-remote-connections": [
                       { hostId: "ssh:server", alias: "server", displayName: "Server" },
                     ],
+                    "app-server-project-id-by-legacy-project-id-by-host": {
+                      "local:/isolated/codex": { "local-project": "native-project" },
+                    },
+                    "app-server-projects-migration-by-host": {
+                      "local:/isolated/codex": {
+                        threadAssignmentsMigrated: false,
+                        pendingThreadAssignmentIds: ["recent", "older"],
+                      },
+                    },
+                    "thread-project-assignments": {
+                      recent: { projectKind: "local", projectId: "local-project" },
+                    },
+                    "projectless-thread-ids": ["older"],
                   }),
                 ),
             }),

@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import { connect } from "./CodexProjectMembership.ts";
+import { connect, pendingCodexMembership } from "./CodexProjectMembership.ts";
 
 const Projects = Schema.fromJsonString(
   Schema.Struct({
@@ -32,17 +32,20 @@ const Threads = Schema.fromJsonString(
   }),
 );
 const State = Schema.fromJsonString(
-  Schema.Struct({
-    "codex-managed-remote-connections": Schema.optionalKey(
-      Schema.Array(
-        Schema.Struct({
-          hostId: Schema.String,
-          alias: Schema.NullOr(Schema.String),
-          displayName: Schema.String,
-        }),
+  Schema.StructWithRest(
+    Schema.Struct({
+      "codex-managed-remote-connections": Schema.optionalKey(
+        Schema.Array(
+          Schema.Struct({
+            hostId: Schema.String,
+            alias: Schema.NullOr(Schema.String),
+            displayName: Schema.String,
+          }),
+        ),
       ),
-    ),
-  }),
+    }),
+    [Schema.Record(Schema.String, Schema.Unknown)],
+  ),
 );
 
 class DesktopSourcesError extends Schema.TaggedError<DesktopSourcesError>()(
@@ -118,6 +121,10 @@ export const readCodexDesktopSources = Effect.fn("readCodexDesktopSources")(func
   const result: CodexDesktopHistoryContext[] = [];
   for (const source of sources.values()) {
     const assignments = new Map<string, string | null>();
+    const pending =
+      source.hostId === "local"
+        ? pendingCodexMembership(state, homePath, "desktop")
+        : new Map<string, string | null>();
     for (const archived of [false, true]) {
       let cursor: string | undefined;
       const seen = new Set<string>();
@@ -132,7 +139,8 @@ export const readCodexDesktopSources = Effect.fn("readCodexDesktopSources")(func
         }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Threads)));
         for (const thread of page.threads) {
           const id = thread.id ?? thread.threadId;
-          if (id !== undefined) assignments.set(id, thread.projectId);
+          if (id !== undefined)
+            assignments.set(id, pending.has(id) ? pending.get(id)! : thread.projectId);
         }
         cursor = page.nextCursor ?? undefined;
         if (cursor && seen.has(cursor))

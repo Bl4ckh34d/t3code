@@ -1,6 +1,6 @@
 import { attachSidebarTree, SIDEBAR_TREE_PROPS } from "../lib/sidebarTree";
 import { EnvironmentId, ProviderInstanceId, type ScopedProjectRef } from "@t3tools/contracts";
-import { SidebarCodexArchiveLink } from "./sidebar/SidebarCodexArchiveLink";
+import { renderCodexHistoryLinks } from "./sidebar/SidebarCodexArchiveLink";
 import {
   SidebarProjectFolderHistory,
   SidebarProjectHistoryLoader,
@@ -4121,21 +4121,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 }
                               }
                               if (codex && !provider.collapsed && !environment.collapsed) {
-                                if (!recentShown)
-                                  items.push(
-                                    <SidebarCodexArchiveLink
-                                      key={`${provider.instanceId}:recent`}
-                                      environmentId={environment.environmentId}
-                                      instanceId={provider.instanceId}
-                                      emptyRecent
-                                    />,
-                                  );
                                 items.push(
-                                  <SidebarCodexArchiveLink
-                                    key={`${provider.instanceId}:archive`}
-                                    environmentId={environment.environmentId}
-                                    instanceId={provider.instanceId}
-                                  />,
+                                  ...renderCodexHistoryLinks({
+                                    environmentId: environment.environmentId,
+                                    instanceId: provider.instanceId,
+                                    showRecent: !recentShown,
+                                  }),
                                 );
                               }
                             }

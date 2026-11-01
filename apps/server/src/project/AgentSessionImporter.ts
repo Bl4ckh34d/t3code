@@ -16,6 +16,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  resolveProviderInstanceEnabled,
   ThreadId,
   TurnItemId,
   type AgentSessionImportInput,
@@ -653,9 +654,12 @@ const make = Effect.gen(function* () {
     const settings = yield* (yield* ServerSettings.ServerSettingsService).getSettings.pipe(
       Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-settings", cause })),
     );
+    if (!Object.hasOwn(settings.providerInstances, "codex"))
+      instances.add(ProviderInstanceId.make("codex"));
     for (const [id, instance] of Object.entries(settings.providerInstances)) {
-      if (instance.driver === "codex" && instance.enabled !== false)
+      if (instance.driver === "codex" && resolveProviderInstanceEnabled(instance))
         instances.add(ProviderInstanceId.make(id));
+      else instances.delete(ProviderInstanceId.make(id));
     }
     for (const instanceId of instances) {
       const nativeOwners = yield* readCodexThreadOwners(instanceId).pipe(
@@ -776,9 +780,13 @@ const make = Effect.gen(function* () {
     sync: (input: AgentSessionSyncInput = {}) => sync(input).pipe(syncLock.withPermits(1)),
     desktopSources: Effect.gen(function* () {
       const settings = yield* (yield* ServerSettings.ServerSettingsService).getSettings;
-      const ids = new Set([ProviderInstanceId.make("codex")]);
+      const ids = new Set<ProviderInstanceId>(
+        Object.hasOwn(settings.providerInstances, "codex")
+          ? []
+          : [ProviderInstanceId.make("codex")],
+      );
       for (const [id, instance] of Object.entries(settings.providerInstances)) {
-        if (instance.driver === "codex" && instance.enabled !== false)
+        if (instance.driver === "codex" && resolveProviderInstanceEnabled(instance))
           ids.add(ProviderInstanceId.make(id));
       }
       const sources = yield* Effect.forEach([...ids], readCodexDesktopSources);

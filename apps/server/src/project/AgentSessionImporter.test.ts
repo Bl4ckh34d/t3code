@@ -10,6 +10,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
+  ServerSettings as ServerSettingsSchema,
   type ApplicationStoredEvent,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
@@ -24,6 +25,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Schema from "effect/Schema";
+import { vi } from "vite-plus/test";
 
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
@@ -42,6 +45,14 @@ import * as ProjectService from "./ProjectService.ts";
 import * as ServerConfig from "../config.ts";
 import { readCodexThreadOwners, pullCodexMembership } from "./CodexProjectMembership.ts";
 import { desktopBridge } from "./CodexDesktopBridge.ts";
+import * as CodexMembership from "./CodexProjectMembership.ts";
+import * as ServerSettings from "../serverSettings.ts";
+
+const nativeHistory = vi.hoisted(() => vi.fn());
+vi.mock("./CodexHistory.ts", () => ({
+  synchronizeCodexHistory: (...args: readonly unknown[]) => nativeHistory(...args),
+}));
+const decodeSettings = Schema.decodeEffect(ServerSettingsSchema);
 
 const projectId = ProjectId.make("agent-session-import-project");
 const timestamp = "2026-09-01T10:00:00.000Z";
@@ -94,6 +105,95 @@ function candidate(
 
 const PI_MODEL_SELECTION = { instanceId: ProviderInstanceId.make("pi"), model: "default" };
 
+it.effect("imports the unconfigured default Codex provider on a fresh server exactly once", () =>
+  Effect.gen(function* () {
+    const source = candidate(CODEX_MODEL_SELECTION, "fresh-server-chat");
+    nativeHistory.mockReset();
+    nativeHistory.mockImplementation(
+      (
+        _instance,
+        ingest: (
+          native: {
+            id: string;
+            cwd: string;
+            name: string;
+            preview: string;
+            archived: boolean;
+            createdAt: number;
+            updatedAt: number;
+          },
+          messages: AgentSessionScanner.AgentSessionThreadMessage[],
+        ) => Effect.Effect<void>,
+      ) =>
+        ingest(
+          {
+            id: source.thread.providerSessionId,
+            cwd: "/workspace/project",
+            name: source.thread.title,
+            preview: "Fix it",
+            archived: false,
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          [...source.thread.messages],
+        ).pipe(Effect.as(0)),
+    );
+    using _membership = vi.spyOn(CodexMembership, "synchronizeCodexMembership").mockReturnValue(
+      Effect.succeed({
+        updated: 0,
+        desktopRefreshRequired: false,
+        projectIds: [],
+        threadIds: [],
+      }),
+    );
+    const importer = yield* makeImporter([]);
+    const settings = yield* decodeSettings({});
+    for (let repeat = 0; repeat < 2; repeat++) {
+      expect(
+        yield* importer.sync().pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              Layer.mock(ServerSettings.ServerSettingsService)({
+                getSettings: Effect.succeed(settings),
+              }),
+            ),
+          ),
+        ),
+      ).toMatchObject({ importedCount: 1, skippedCount: 0, membershipErrorCount: 0 });
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      expect(
+        (yield* projections.getThreadRecords(importId(source), ["messages"])).messages.map(
+          (m) => m.text,
+        ),
+      ).toEqual(["Fix it", "Fixed"]);
+    }
+    for (const disabled of [{ enabled: false }, { config: { enabled: false } }]) {
+      const disabledSettings = yield* decodeSettings({
+        providerInstances: { codex: { driver: "codex", ...disabled } },
+      });
+      expect(
+        yield* importer.sync().pipe(
+          Effect.provide(
+            Layer.mock(ServerSettings.ServerSettingsService)({
+              getSettings: Effect.succeed(disabledSettings),
+            }),
+          ),
+        ),
+      ).toMatchObject({ importedCount: 0, skippedCount: 0, membershipErrorCount: 0 });
+    }
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Layer.mergeAll(
+        persistence,
+        ServerConfig.layerTest("/workspace/project", { prefix: "t3-default-codex-" }).pipe(
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
+  ),
+);
+
 it.effect(
   "uses the connected Codex desktop's project context while native migration is incomplete",
   () =>
@@ -104,23 +204,6 @@ it.effect(
       const projections = yield* ProjectionStore.ProjectionStoreV2;
       const target = ProjectId.make("desktop-project");
       const writes: unknown[] = [];
-      const desktop = desktopBridge((method) =>
-        Effect.succeed(
-          method === "tools/list"
-            ? { tools: [{ name: "list_threads", namespace: "codex_app" }] }
-            : {
-                success: true,
-                contentItems: [
-                  {
-                    text: JSON.stringify({
-                      threads: [{ id: "current-live-chat", projectId: "legacy", hostId: "local" }],
-                      nextCursor: null,
-                    }),
-                  },
-                ],
-              },
-        ),
-      );
       const project = {
         id: target,
         title: "Desktop project",
@@ -131,7 +214,38 @@ it.effect(
         updatedAt: timestamp,
         deletedAt: null,
       };
-      for (const remote of [false, true]) {
+      for (const scenario of [
+        { remote: false, reported: "legacy", pending: undefined, complete: false, context: false },
+        {
+          remote: true,
+          reported: "remote-project",
+          pending: undefined,
+          complete: false,
+          context: true,
+        },
+        { remote: false, reported: null, pending: "legacy", complete: false, context: false },
+        { remote: false, reported: null, pending: "legacy", complete: false, context: true },
+        { remote: false, reported: "legacy", pending: null, complete: false, context: false },
+        { remote: false, reported: null, pending: "legacy", complete: true, context: false },
+      ]) {
+        const { remote } = scenario;
+        const reportedDesktop = desktopBridge((method) =>
+          method === "tools/list"
+            ? Effect.succeed({ tools: [{ name: "list_threads", namespace: "codex_app" }] })
+            : Effect.succeed({
+                success: true,
+                contentItems: [
+                  {
+                    text: JSON.stringify({
+                      threads: [
+                        { id: "current-live-chat", projectId: scenario.reported, hostId: "local" },
+                      ],
+                      nextCursor: null,
+                    }),
+                  },
+                ],
+              }),
+        );
         writes.length = 0;
         yield* pullCodexMembership(
           CODEX_MODEL_SELECTION.instanceId,
@@ -163,19 +277,35 @@ it.effect(
               "local:/codex": { legacy: "native-project" },
             },
             "local-projects": { legacy: { name: project.title, rootPaths: ["/repo"] } },
+            "app-server-projects-migration-by-host": {
+              "local:/codex": {
+                threadAssignmentsMigrated: scenario.complete,
+                pendingThreadAssignmentIds:
+                  scenario.pending === undefined ? [] : ["current-live-chat"],
+              },
+            },
+            "thread-project-assignments":
+              scenario.pending === "legacy"
+                ? { "current-live-chat": { projectKind: "local", projectId: "legacy" } }
+                : {},
+            "projectless-thread-ids": scenario.pending === null ? ["current-live-chat"] : [],
           },
           "/codex",
-          remote ? undefined : desktop,
-          remote
+          scenario.context ? undefined : reportedDesktop,
+          scenario.context
             ? {
                 providerInstanceId: CODEX_MODEL_SELECTION.instanceId,
-                hostId: "ssh:server",
+                hostId: remote ? "ssh:server" : "local",
                 label: "Server",
                 sshAlias: "server",
                 projects: [
-                  { id: "remote-project", title: "Remote Codex project", workspaceRoot: "/repo" },
+                  {
+                    id: remote ? "remote-project" : "legacy",
+                    title: "Desktop project",
+                    workspaceRoot: "/repo",
+                  },
                 ],
-                assignments: [{ threadId: "current-live-chat", projectId: "remote-project" }],
+                assignments: [{ threadId: "current-live-chat", projectId: scenario.reported }],
               }
             : undefined,
         ).pipe(
@@ -185,7 +315,8 @@ it.effect(
                 Layer.provideMerge(NodeServices.layer),
               ),
               Layer.mock(ProjectService.ProjectService)({
-                getById: () => Effect.succeedSome(project),
+                getById: (id) =>
+                  Effect.succeed(id === target ? Option.some(project) : Option.none()),
                 update: () => Effect.succeed(project),
                 bootstrap: (input) =>
                   Effect.succeed({ project: { ...project, id: input.projectId }, created: true }),
@@ -214,7 +345,9 @@ it.effect(
             type: "thread.metadata.update",
             organizationProjectId: remote
               ? ProjectId.make("codex-project:codex:remote-project")
-              : target,
+              : scenario.pending === null || scenario.complete
+                ? ProjectId.make("codex-unassigned-history")
+                : target,
           },
         ]);
       }
@@ -549,7 +682,7 @@ const makeImporter = Effect.fn(function* (
   );
   const context = yield* Layer.build(
     AgentSessionImporter.layer.pipe(
-      Layer.provide(
+      Layer.provideMerge(
         Layer.mergeAll(
           sinkLayer,
           Layer.succeed(IdAllocator.IdAllocatorV2, yield* IdAllocator.IdAllocatorV2),
@@ -559,8 +692,23 @@ const makeImporter = Effect.fn(function* (
           ),
           Layer.mock(AgentSessionScanner.AgentSessionScanner)({
             recentThreads: () => Stream.fromIterable(candidates),
+            scanForSync: Effect.succeed({ candidates: [], truncated: false, scannedAt: timestamp }),
           }),
           Layer.mock(ProjectService.ProjectService)({
+            bootstrap: () =>
+              Effect.succeed({
+                project: {
+                  id: projectId,
+                  title: "Project",
+                  workspaceRoot: "/workspace/project",
+                  defaultModelSelection: null,
+                  scripts: [],
+                  createdAt: timestamp,
+                  updatedAt: timestamp,
+                  deletedAt: null,
+                },
+                created: true,
+              }),
             getById: () =>
               Effect.succeedSome({
                 id: projectId,
@@ -590,6 +738,7 @@ const makeImporter = Effect.fn(function* (
   const importer = Context.get(context, AgentSessionImporter.AgentSessionImporter);
   return {
     run: importer.importRecentAgentThreads({ projectId }),
+    sync: () => importer.sync().pipe(Effect.provide(context)),
     published,
     importNative: (source: ReturnType<typeof candidate>, target: ThreadId) =>
       importer.importRecentAgentThreads({ projectId }, false, [source], target),

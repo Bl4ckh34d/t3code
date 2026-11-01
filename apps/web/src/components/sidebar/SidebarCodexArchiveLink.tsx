@@ -4,7 +4,21 @@ import { ArchiveIcon, ClockIcon } from "lucide-react";
 import { sidebarProviderRowId } from "./SidebarProviderHeader";
 import { refreshArchivedThreadsForEnvironment } from "../../lib/archivedThreadsState";
 
-export function SidebarCodexArchiveLink(props: {
+export function renderCodexHistoryLinks(props: {
+  environmentId: EnvironmentId;
+  instanceId: string;
+  showRecent: boolean;
+}) {
+  const parent = sidebarProviderRowId(props.environmentId, props.instanceId);
+  return [
+    ...(props.showRecent
+      ? [<SidebarCodexArchiveLink key={`${parent}:recent`} {...props} emptyRecent />]
+      : []),
+    <SidebarCodexArchiveLink key={`${parent}:archive`} {...props} />,
+  ];
+}
+
+function SidebarCodexArchiveLink(props: {
   environmentId: EnvironmentId;
   instanceId: string;
   emptyRecent?: boolean;
