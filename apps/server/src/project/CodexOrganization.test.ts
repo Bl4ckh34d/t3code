@@ -182,7 +182,7 @@ const setup = Effect.gen(function* () {
       }),
     ),
   );
-  return { services, writes, desktopState };
+  return { services, writes, desktopState, records };
 });
 
 it.effect(
@@ -251,6 +251,22 @@ it.effect(
       active = "codex-app-tools-restarted";
       yield* run;
       yield* Effect.gen(function* () {
+        for (const state of [
+          {},
+          {
+            "local-projects": {},
+            "thread-project-assignments": {},
+            "app-server-project-id-by-legacy-project-id-by-host": {},
+          },
+        ]) {
+          const nativeOnly = yield* connect(ProviderInstanceId.make("codex")).pipe(
+            Effect.provideService(
+              FileSystem.FileSystem,
+              FileSystem.makeNoop({ readFileString: () => Effect.succeed(JSON.stringify(state)) }),
+            ),
+          );
+          expect(nativeOnly.desktopConfigured).toBe(false);
+        }
         const request = yield* makeDesktopRequest(
           "",
           (yield* Path.Path).resolve("/isolated/codex-home"),
@@ -260,6 +276,7 @@ it.effect(
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provide(h.services),
         Effect.provideService(HostProcess.Platform, "win32"),
+        Effect.provideService(HostProcess.Environment, {}),
       );
       expect(writes).toEqual([
         "\\\\.\\pipe\\codex-app-tools-first",
@@ -458,6 +475,7 @@ it.effect(
             return {
               tools: [
                 "list_projects",
+                "list_threads",
                 "move_thread_to_project",
                 "reorder_sidebar_projects",
                 "update_sidebar_preferences",
@@ -473,7 +491,24 @@ it.effect(
               beforeThreadId?: string;
             };
           };
-          if (call.tool === "update_sidebar_preferences") {
+          if (call.tool === "list_threads") {
+            return {
+              success: true,
+              contentItems: [
+                {
+                  text: JSON.stringify({
+                    threads: Object.entries(h.desktopState["thread-project-assignments"]).map(
+                      ([id, assignment]) => ({
+                        id,
+                        projectId: assignment.projectId,
+                        hostId: "local",
+                      }),
+                    ),
+                  }),
+                },
+              ],
+            };
+          } else if (call.tool === "update_sidebar_preferences") {
             manual = true;
           } else if (call.tool === "move_thread_to_project") {
             if (!desktopApproved)
@@ -617,6 +652,14 @@ it.effect(
           ),
         ))._tag,
       ).toBe("Failure");
+      for (const _ of [0, 1]) {
+        yield* synchronizeCodexMembership(ProviderInstanceId.make("codex")).pipe(
+          Effect.provide(h.services),
+          Effect.provideService(HostProcess.Platform, "win32"),
+          Effect.provideService(HostProcess.Environment, {}),
+        );
+        expect(h.records.thread.organizationProjectId).toBe(secondProjectId);
+      }
       const beforeRejectedWrites = h.writes.length;
       accepted = false;
       expect(

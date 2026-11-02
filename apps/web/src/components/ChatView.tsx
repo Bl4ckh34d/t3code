@@ -1104,6 +1104,12 @@ export default function ChatView(props: ChatViewProps) {
       ? scopeProjectRef(activeThreadEnvironmentId, activeThreadProjectId)
       : null;
   const activeProject = useProject(activeProjectRef);
+  const organizationProjectId = activeThread?.organizationProjectId ?? activeThreadProjectId;
+  const organizationProjectRef =
+    activeThreadEnvironmentId !== undefined && organizationProjectId !== undefined
+      ? scopeProjectRef(activeThreadEnvironmentId, organizationProjectId)
+      : null;
+  const organizationProject = useProject(organizationProjectRef);
   const activeProjectSettings = resolveProjectSettings(
     settings,
     activeProject?.id ?? null,
@@ -1117,7 +1123,7 @@ export default function ChatView(props: ChatViewProps) {
       ? draftFallback.selection
       : activeProjectSettings.settings.defaultModelSelection;
   const handleNewThreadInActiveProject = () => {
-    startNewThreadForProject(activeProjectRef, handleNewThread);
+    startNewThreadForProject(organizationProjectRef, handleNewThread);
   };
   const handleNewThreadInActiveProjectStable = useStableCallback(handleNewThreadInActiveProject);
   const projectGroupingSettings = selectProjectGroupingSettings(settings);
@@ -3337,7 +3343,7 @@ export default function ChatView(props: ChatViewProps) {
               isServerThread={isServerThread}
               activeThreadTitle={activeThread.title}
               activeThreadLinkOrigin={activeThreadShell?.linkOrigin?.label ?? null}
-              activeProject={activeProject ?? null}
+              activeProject={organizationProject ?? null}
               parentThreadLink={headerParentThreadLink}
               onOpenThread={onOpenRelatedThreadStable}
               rightPanelOpen={inlineRightPanelOwnsTitleBar}

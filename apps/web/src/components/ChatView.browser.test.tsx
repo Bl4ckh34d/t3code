@@ -1,6 +1,6 @@
 import { createMemoryHistory } from "@tanstack/react-router";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
-import { ThreadId } from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import type * as Context from "effect/Context";
 import { expect, it, vi } from "vite-plus/test";
@@ -14,6 +14,7 @@ import {
   ENVIRONMENT_ID,
   PROJECT_ID,
   installFakeEnvironment,
+  threadWithHistory,
   type FakeDriver,
 } from "../../test/fakeEnvironment";
 import { render } from "../../test/render";
@@ -26,6 +27,34 @@ vi.mock("../../../../packages/client-runtime/src/connection/driver.ts", async (i
     import("effect/Layer"),
   ]);
   return { ...actual, layer: Layer.succeed(actual.ConnectionDriver, fakeDriver) };
+});
+
+it("starts a new chat in the synchronized project instead of its import storage project", async () => {
+  const thread = {
+    ...threadWithHistory("imported-project", 1),
+    projectId: ProjectId.make("codex-unassigned-history"),
+    organizationProjectId: PROJECT_ID,
+  };
+  using _environment = installFakeEnvironment([thread]);
+  __setClientSettingsForTests({
+    ...DEFAULT_CLIENT_SETTINGS,
+    onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+  });
+  const router = getRouter(
+    createMemoryHistory({ initialEntries: [`/${ENVIRONMENT_ID}/${thread.id}`] }),
+  );
+  await router.load();
+  // AppRoot owns the router.
+  await using screen = await render(<AppRoot router={router} />, { router: false });
+  const newThread = screen
+    .getByRole("button", { name: /^New thread in (render|Unassigned Codex chats)$/ })
+    .first();
+  await expect.element(newThread).toBeVisible();
+  expect(newThread.element().getAttribute("aria-label")).toBe("New thread in render");
+  await newThread.click();
+  await vi.waitFor(() => expect(router.state.location.pathname).toMatch(/^\/draft\//));
+  const draftId = DraftId.make(router.state.location.pathname.slice("/draft/".length));
+  expect(useComposerDraftStore.getState().getDraftSession(draftId)?.projectId).toBe(PROJECT_ID);
 });
 
 vi.mock(import("~/rpc/requestLatencyState"), async (original) => ({

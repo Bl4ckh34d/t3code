@@ -302,10 +302,17 @@ export const connect = Effect.fn("CodexProjectMembership.connect")(function* (
     environment,
   });
   const desktopPipePath = config.desktopPipePath || environment.CODEX_APP_TOOLS_PIPE_PATH || "";
+  const desktopConfigured =
+    desktopPipePath.length > 0 ||
+    ((yield* HostProcess.Platform) === "win32" &&
+      codexDesktopSidebar(
+        yield* readCodexDesktopState(layout.sharedHomePath),
+        layout.sharedHomePath,
+      ).projects.size > 0);
   return {
     ...connection,
     homePath: layout.sharedHomePath,
-    desktopConfigured: desktopPipePath.length > 0 || (yield* HostProcess.Platform) === "win32",
+    desktopConfigured,
     desktop: desktopBridge(yield* makeDesktopRequest(desktopPipePath, layout.sharedHomePath)),
   };
 });

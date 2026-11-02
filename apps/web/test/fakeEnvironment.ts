@@ -182,6 +182,8 @@ function run(threadId: ThreadId, id: RunId, ordinal: number, userMessageId: stri
 
 export interface FakeThread {
   readonly id: ThreadId;
+  readonly projectId?: ProjectId;
+  readonly organizationProjectId?: ProjectId;
   readonly title: string;
   readonly runs: ReadonlyArray<OrchestrationV2Run>;
   readonly items: ReadonlyArray<OrchestrationV2TurnItem>;
@@ -214,7 +216,8 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
   const latest = thread.runs.at(-1);
   return {
     id: thread.id,
-    projectId: PROJECT_ID,
+    projectId: thread.projectId ?? PROJECT_ID,
+    organizationProjectId: thread.organizationProjectId ?? null,
     title: thread.title,
     providerInstanceId: CODEX,
     modelSelection: MODEL,
@@ -262,6 +265,7 @@ function projectionOf(thread: FakeThread): OrchestrationV2ThreadProjection {
     thread: {
       id: shell.id,
       projectId: shell.projectId,
+      organizationProjectId: shell.organizationProjectId,
       title: shell.title,
       providerInstanceId: shell.providerInstanceId,
       modelSelection: shell.modelSelection,
@@ -324,6 +328,14 @@ const subscribe = <A>(first: ReadonlyArray<A>, register?: (queue: Queue.Queue<A>
   );
 
 const handlers: Record<string, (input: never) => unknown> = {
+  [WS_METHODS.projectsReadFile]: (input: { readonly relativePath: string }) =>
+    Effect.succeed({
+      relativePath: input.relativePath,
+      contents: "",
+      byteLength: 0,
+      truncated: false,
+      exists: false,
+    }),
   [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: () =>
     subscribe<OrchestrationV2ShellStreamItem>([
       {
@@ -331,7 +343,21 @@ const handlers: Record<string, (input: never) => unknown> = {
         snapshot: {
           schemaVersion: 1,
           snapshotSequence: sequence,
-          projects: [project],
+          projects: [
+            project,
+            ...threads.flatMap((thread) =>
+              thread.projectId && thread.projectId !== PROJECT_ID
+                ? [
+                    {
+                      ...project,
+                      id: thread.projectId,
+                      title: "Unassigned Codex chats",
+                      workspaceRoot: "/workspace/unassigned",
+                    },
+                  ]
+                : [],
+            ),
+          ],
           threads: threads.map(shellOf),
           archivedThreads: [],
         },

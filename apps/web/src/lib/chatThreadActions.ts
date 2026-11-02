@@ -15,6 +15,7 @@ type ComposerModelSelectionState = Pick<
 interface ThreadContextLike {
   environmentId: EnvironmentId;
   projectId: ProjectId;
+  organizationProjectId?: ProjectId | null | undefined;
 }
 
 interface NewThreadHandler {
@@ -71,7 +72,10 @@ export function resolveThreadActionProjectRef(
   context: ChatThreadActionContext,
 ): ScopedProjectRef | null {
   if (context.activeThread) {
-    return scopeProjectRef(context.activeThread.environmentId, context.activeThread.projectId);
+    return scopeProjectRef(
+      context.activeThread.environmentId,
+      context.activeThread.organizationProjectId ?? context.activeThread.projectId,
+    );
   }
   if (context.activeDraftThread) {
     return scopeProjectRef(
