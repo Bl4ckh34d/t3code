@@ -338,7 +338,7 @@ Drag a chat onto another project folder on the same connection to move its organ
 
 Manual synchronization takes project and chat names, project membership, and sidebar order from Codex. Codex remains authoritative on every synchronization.
 
-To organize synchronized data from T3, connect the environment to the running Codex desktop app. In the Codex provider settings, **CODEX_HOME path** must match that app. The desktop connection supplied when T3 starts from Codex is used automatically; **Codex desktop connection** can select another local connection. T3 applies a rename, move, or reorder only after Codex acknowledges it. A disconnected or unsupported desktop connection leaves T3 unchanged and reports an error.
+To organize synchronized data from T3, keep the Codex desktop app running on the environment's machine. In the Codex provider settings, **CODEX_HOME path** must match that app. On Windows, T3 automatically finds the matching desktop connection, including on a new PC and after Codex restarts. No endpoint needs to be entered. If multiple matching instances are running, close the duplicate and retry. The desktop connection supplied when T3 starts from Codex is also used automatically; **Codex desktop connection** can select another local connection. T3 applies a rename, move, or reorder only after Codex acknowledges it. A disconnected or unsupported desktop connection leaves T3 unchanged and reports an error.
 
 Current Codex desktop connections support chat renaming but do not expose project renaming to T3. Project names are read-only while the Boring sidebar is enabled. Rename a synchronized project in Codex, then use **Sync agent history** in T3 to read its name.
 

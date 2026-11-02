@@ -305,7 +305,7 @@ export const connect = Effect.fn("CodexProjectMembership.connect")(function* (
   return {
     ...connection,
     homePath: layout.sharedHomePath,
-    desktopConfigured: desktopPipePath.length > 0,
+    desktopConfigured: desktopPipePath.length > 0 || (yield* HostProcess.Platform) === "win32",
     desktop: desktopBridge(yield* makeDesktopRequest(desktopPipePath, layout.sharedHomePath)),
   };
 });
