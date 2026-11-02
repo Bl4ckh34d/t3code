@@ -106,6 +106,7 @@ export function isProviderUpdateCandidate(
 ): provider is ProviderUpdateCandidate {
   return (
     provider.enabled &&
+    provider.installed &&
     provider.compatibilityAdvisory?.latestVersionStatus !== "broken" &&
     provider.compatibilityAdvisory?.latestVersionStatus !== "unsupported" &&
     provider.versionAdvisory?.status === "behind_latest" &&
@@ -128,6 +129,7 @@ export function isProviderSettingsUpdateCandidate(
 ): provider is ProviderSettingsUpdateCandidate {
   return (
     provider.enabled &&
+    provider.installed &&
     provider.compatibilityAdvisory?.latestVersionStatus !== "broken" &&
     provider.compatibilityAdvisory?.latestVersionStatus !== "unsupported" &&
     provider.versionAdvisory?.status === "behind_latest" &&
@@ -200,7 +202,7 @@ export interface ProviderUpdateRun {
 export function getProviderUpdateRunOutcome(
   run: ProviderUpdateRun,
 ):
-  | { readonly status: "interrupted" | "updated" }
+  | { readonly status: "interrupted" | "updated" | "skipped" }
   | { readonly status: "failed"; readonly line: string } {
   if (isAtomCommandInterrupted(run.result)) return { status: "interrupted" };
   const label = `${run.machineLabel} · ${PROVIDER_DISPLAY_NAMES[run.driver] ?? run.driver}`;
@@ -211,9 +213,12 @@ export function getProviderUpdateRunOutcome(
       line: `${label}: ${error instanceof Error ? error.message : "Provider update failed."}`,
     };
   }
-  const updateState = run.result.value.providers.find(
+  const provider = run.result.value.providers.find(
     (provider) => provider.instanceId === run.instanceId,
-  )?.updateState;
+  );
+  if (provider?.installed === false && provider.updateState === undefined)
+    return { status: "skipped" };
+  const updateState = provider?.updateState;
   return updateState?.status === "succeeded"
     ? { status: "updated" }
     : {
@@ -229,7 +234,7 @@ export function getProviderUpdateRunToastView(runs: ReadonlyArray<ProviderUpdate
 } | null {
   const settled = runs
     .map(getProviderUpdateRunOutcome)
-    .filter((outcome) => outcome.status !== "interrupted");
+    .filter((outcome) => outcome.status !== "interrupted" && outcome.status !== "skipped");
   if (settled.length === 0) {
     return null;
   }

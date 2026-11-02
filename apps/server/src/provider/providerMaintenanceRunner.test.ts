@@ -271,6 +271,45 @@ function layerFailingLatestLookupAfterFirst() {
 }
 
 describe("providerMaintenanceRunner", () => {
+  it.effect("skips missing Codex and Claude installations without running an installer", () =>
+    Effect.gen(function* () {
+      for (const driver of [CODEX_DRIVER, ProviderDriverKind.make("claudeAgent")]) {
+        for (const removedBeforeRun of [false, true]) {
+          const missing = {
+            ...baseProvider,
+            driver,
+            instanceId: ProviderInstanceId.make(driver),
+            installed: false,
+          };
+          const { registry, providersRef } = yield* makeRegistry({
+            ...missing,
+            installed: removedBeforeRun,
+          });
+          const updater = yield* makeTestRunner({
+            ...registry,
+            refreshInstance: () =>
+              Ref.set(providersRef, [missing]).pipe(Effect.andThen(Ref.get(providersRef))),
+          });
+          const result = yield* updater.updateProvider({
+            provider: driver,
+            instanceId: missing.instanceId,
+          });
+          assert.strictEqual(result.providers[0]?.installed, false);
+          assert.strictEqual(result.providers[0]?.updateState, undefined);
+        }
+      }
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          layerNonWindowsPlatform,
+          layerLatestVersionHttpClient("1.0.0"),
+          layerMockSpawner(() => {
+            throw new Error("Missing providers must not run an installer");
+          }),
+        ),
+      ),
+    ),
+  );
   it.effect("runs the allowlisted provider update command and records success", () => {
     const calls: Array<{ command: string; args: ReadonlyArray<string> }> = [];
     return Effect.gen(function* () {

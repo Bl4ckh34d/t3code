@@ -71,6 +71,14 @@ function updateCandidate(input: Parameters<typeof provider>[0]): ProviderUpdateC
 }
 
 describe("provider update launch notification logic", () => {
+  it.each(["codex", "claudeAgent"])(
+    "does not offer updates for missing %s installations",
+    (kind) => {
+      const missing = { ...provider({ driver: driver(kind) }), installed: false };
+      expect(isProviderUpdateCandidate(missing)).toBe(false);
+      expect(isProviderSettingsUpdateCandidate(missing)).toBe(false);
+    },
+  );
   it("disables one-click updates when provider instances disagree on the update command", () => {
     const candidate = updateCandidate({
       driver: driver("claudeAgent"),
@@ -319,6 +327,17 @@ describe("getProviderUpdateRunToastView", () => {
   });
 
   it("lists every failed update and ignores interrupted ones", () => {
+    expect(
+      getProviderUpdateRunToastView([
+        run(
+          "Server",
+          "codex",
+          AsyncResult.success({
+            providers: [{ ...provider({ driver: driver("codex") }), installed: false }],
+          }),
+        ),
+      ]),
+    ).toBeNull();
     const view = getProviderUpdateRunToastView([
       run(
         "Mac Studio",

@@ -384,12 +384,27 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
         : (target.instanceId ?? defaultInstanceIdForDriver(provider));
     const targetVersion = typeof target === "string" ? undefined : target.targetVersion;
     const targetKey = `instance:${instanceId}`;
+    const skipMissing = () =>
+      providerRegistry
+        .setProviderMaintenanceActionState({
+          instanceId,
+          action: "update",
+          state: null,
+        })
+        .pipe(Effect.map((providers) => ({ providers })));
+    const snapshot = (yield* providerRegistry.getProviders).find(
+      (entry) => entry.instanceId === instanceId,
+    );
+    if (snapshot?.installed === false) return yield* skipMissing();
     const capabilities = yield* providerRegistry.getProviderMaintenanceCapabilitiesForInstance(
       instanceId,
       provider,
     );
     const update = capabilities.update;
     if (!update) {
+      const refreshed = yield* providerRegistry.refreshInstance(instanceId);
+      if (refreshed.find((entry) => entry.instanceId === instanceId)?.installed === false)
+        return yield* skipMissing();
       return yield* new ServerProviderUpdateError({
         provider,
         reason: "This provider does not support one-click updates.",
@@ -431,6 +446,13 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
                 }),
               ).pipe(Effect.asVoid);
             yield* setRunningMessage("Checking for the latest version");
+
+            const beforeRefresh = (yield* providerRegistry.getProviders).find(
+              (entry) => entry.instanceId === instanceId,
+            );
+            const refreshed = yield* providerRegistry.refreshInstance(instanceId);
+            if (refreshed.find((entry) => entry.instanceId === instanceId)?.installed === false)
+              return yield* skipMissing();
 
             // Recheck ownership after acquiring the cached lock in case the executable changed.
             const fresh = yield* providerRegistry.getProviderMaintenanceCapabilitiesForInstance(
@@ -493,11 +515,9 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
             }
 
             if (targetVersion === undefined) {
-              const prior = (yield* providerRegistry.getProviders).find(
-                (candidate) => candidate.instanceId === instanceId,
-              );
+              const prior = beforeRefresh;
               const precheck = yield* verifyFromRefresh(
-                providerRegistry.refreshInstance(instanceId),
+                Effect.succeed(refreshed),
                 provider,
                 fresh,
                 instanceId,

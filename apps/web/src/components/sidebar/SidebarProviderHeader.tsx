@@ -5,6 +5,7 @@ import type { SidebarProviderEntry } from "./SidebarThreadRow";
 import { cn } from "~/lib/utils";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { sidebarEnvironmentRowId } from "./SidebarEnvironmentHeader";
+import { SidebarCodexUsage } from "./SidebarCodexUsage";
 
 export function sidebarProviderRowId(environmentId: EnvironmentId, instanceId: string) {
   return `provider:${environmentId}:${instanceId}`;
@@ -44,6 +45,9 @@ export const SidebarProviderHeader = memo(function SidebarProviderHeader(props: 
           <BotIcon aria-hidden className="size-3.5 shrink-0" />
         )}
         <span className="min-w-0 flex-1 truncate">{provider?.displayName ?? props.instanceId}</span>
+        {provider?.driverKind === "codex" && (
+          <SidebarCodexUsage environmentId={props.environmentId} instanceId={props.instanceId} />
+        )}
       </button>
     </li>
   );

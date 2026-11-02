@@ -152,7 +152,7 @@ export function useUpdateEverything(
             const runs = await providers.updateAll({ quiet: true });
             const outcomes = runs.map((run) => {
               const runOutcome = getProviderUpdateRunOutcome(run);
-              if (runOutcome.status !== "updated") {
+              if (runOutcome.status !== "updated" && runOutcome.status !== "skipped") {
                 providerFailures.set(
                   run.environmentId,
                   runOutcome.status === "failed" ? runOutcome.line : "Provider update interrupted",

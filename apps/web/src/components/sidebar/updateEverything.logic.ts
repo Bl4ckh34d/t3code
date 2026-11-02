@@ -491,7 +491,7 @@ export function collectUpdateEverythingResult(input: {
     readonly outcome: ServerUpdateOutcome;
   }>;
   readonly providers: ReadonlyArray<
-    | { readonly status: "interrupted" | "updated" }
+    | { readonly status: "interrupted" | "updated" | "skipped" }
     | { readonly status: "failed"; readonly line: string }
   >;
 }): UpdateEverythingResult {
