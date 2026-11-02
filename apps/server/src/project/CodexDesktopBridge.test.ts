@@ -7,6 +7,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Crypto from "effect/Crypto";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as FileSystem from "effect/FileSystem";
+import { makeDesktopRequest } from "./CodexDesktopConnection.ts";
 import {
   CodexDesktopUnavailable,
   desktopBridge,
@@ -117,5 +119,83 @@ it.live("reads framed desktop responses and rejects mismatched IDs and remote er
         Effect.match({ onSuccess: () => null, onFailure: (error) => error.message }),
       ),
     ).toBe("Desktop permission denied");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("reconnects real Windows pipes after a desktop restart without replaying writes", () =>
+  Effect.gen(function* () {
+    if ((yield* HostProcess.Platform) !== "win32") return;
+    const id = yield* (yield* Crypto.Crypto).randomUUIDv4();
+    let name = `codex-app-tools-${id}-first`;
+    const writes: string[] = [];
+    const server = NodeNet.createServer((socket) => {
+      let data = Buffer.alloc(0);
+      socket.on("data", (chunk: Buffer) => {
+        data = Buffer.concat([data, chunk]);
+        if (data.length < 4 || data.length < data.readUInt32LE(0) + 4) return;
+        const request = JSON.parse(data.subarray(4).toString());
+        const tool = request.params?.tool;
+        if (tool === "set_thread_title") writes.push(name);
+        const result =
+          request.method === "tools/list"
+            ? {
+                tools: ["list_projects", "set_thread_title"].map((name) => ({
+                  name,
+                  namespace: "codex_app",
+                })),
+              }
+            : {
+                success: true,
+                contentItems: [
+                  {
+                    text: JSON.stringify({
+                      projects: [
+                        {
+                          projectId: "isolated",
+                          projectKind: "local",
+                          path: "C:/isolated/project",
+                        },
+                      ],
+                    }),
+                  },
+                ],
+              };
+        const payload = Buffer.from(JSON.stringify({ id: 1, result }));
+        const header = Buffer.alloc(4);
+        header.writeUInt32LE(payload.length);
+        socket.end(Buffer.concat([header, payload]));
+      });
+    });
+    const listen = () =>
+      new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(`\\\\.\\pipe\\${name}`, () => {
+          server.off("error", reject);
+          resolve();
+        });
+      });
+    const close = () => new Promise<void>((resolve) => server.close(() => resolve()));
+    yield* Effect.acquireRelease(Effect.promise(listen), () => Effect.promise(close));
+    const fs = FileSystem.makeNoop({
+      readDirectory: () => Effect.succeed([name]),
+      readFileString: () =>
+        Effect.succeed(
+          JSON.stringify({
+            "local-projects": { isolated: { rootPaths: ["C:/isolated/project"] } },
+            "thread-project-assignments": { thread: { projectKind: "local" } },
+          }),
+        ),
+    });
+    const request = yield* makeDesktopRequest(
+      `\\\\.\\pipe\\codex-app-tools-${id}-stale`,
+      "C:/isolated/home",
+    ).pipe(Effect.provideService(FileSystem.FileSystem, fs));
+    const bridge = desktopBridge(request);
+    yield* bridge.call("set_thread_title", "thread", { title: "First" });
+    yield* Effect.promise(close);
+    name = `codex-app-tools-${id}-restarted`;
+    yield* Effect.promise(listen);
+    yield* bridge.call("set_thread_title", "thread", { title: "Second" });
+    expect(writes).toEqual([`codex-app-tools-${id}-first`, name]);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

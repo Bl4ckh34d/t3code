@@ -56,11 +56,12 @@ export function desktopBridge(request: Request) {
   const requireTool = Effect.fn("CodexDesktopBridge.requireTool")(function* (name: string) {
     const list = yield* request("tools/list", { threadStartKind: "all" }).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(ToolList)),
-      Effect.mapError(
-        () =>
-          new CodexDesktopUnavailable({
-            message: "Connect Codex desktop before organizing synced projects or chats.",
-          }),
+      Effect.mapError((error) =>
+        isDesktopUnavailable(error)
+          ? error
+          : new CodexDesktopUnavailable({
+              message: "Connect Codex desktop before organizing synced projects or chats.",
+            }),
       ),
     );
     const tool = list.tools.find((entry) => entry.name === name && entry.namespace === "codex_app");
@@ -87,11 +88,12 @@ export function desktopBridge(request: Request) {
       turnId: `t3:${yield* crypto.randomUUIDv4()}`,
     }).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(ToolResult)),
-      Effect.mapError(
-        () =>
-          new CodexDesktopUnavailable({
-            message: "Codex desktop did not acknowledge the change. T3 was not updated.",
-          }),
+      Effect.mapError((error) =>
+        isDesktopUnavailable(error)
+          ? error
+          : new CodexDesktopUnavailable({
+              message: "Codex desktop did not acknowledge the change. T3 was not updated.",
+            }),
       ),
     );
     if (!result.success) {

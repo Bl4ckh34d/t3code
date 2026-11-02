@@ -1,5 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   DEFAULT_SERVER_SETTINGS,
   ProjectId,
@@ -22,6 +23,7 @@ import * as ServerConfig from "../config.ts";
 import * as ProjectService from "./ProjectService.ts";
 import { CodexDesktopUnavailable, requestDesktopPipe } from "./CodexDesktopBridge.ts";
 import {
+  connect,
   moveCodexMembership,
   organizeCodex,
   synchronizeCodexMembership,
@@ -31,6 +33,7 @@ import {
 const stubs = vi.hoisted(() => ({
   native: vi.fn<RawClient["request"]>(),
   desktop: vi.fn<ReturnType<typeof requestDesktopPipe>>(),
+  pipe: vi.fn<typeof requestDesktopPipe>(),
   connect: vi.fn(),
 }));
 vi.mock("../provider/CodexProvider.ts", () => ({
@@ -41,7 +44,7 @@ vi.mock("../provider/CodexProvider.ts", () => ({
 }));
 vi.mock("./CodexDesktopBridge.ts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./CodexDesktopBridge.ts")>()),
-  requestDesktopPipe: () => stubs.desktop,
+  requestDesktopPipe: (path: string) => stubs.pipe(path) ?? stubs.desktop,
 }));
 
 const projectId = ProjectId.make("isolated-project");
@@ -56,6 +59,7 @@ const testEnvironment = Layer.mergeAll(
 const setup = Effect.gen(function* () {
   stubs.native.mockReset();
   stubs.desktop.mockReset();
+  stubs.pipe.mockReset();
   stubs.connect.mockReset();
   const homePath = (yield* Path.Path).resolve("/isolated/codex-home");
   const desktopState = {
@@ -179,6 +183,82 @@ const setup = Effect.gen(function* () {
   );
   return { services, writes, desktopState };
 });
+
+it.effect("recovers a restarted desktop only within the configured Codex home", () =>
+  Effect.gen(function* () {
+    const h = yield* setup;
+    let active = "codex-app-tools-first";
+    let ambiguous = false;
+    let lostAcknowledgement = false;
+    const writes: string[] = [];
+    stubs.pipe.mockImplementation((pipe) => (method, params) => {
+      if (pipe.endsWith("stale"))
+        return Effect.fail(new CodexDesktopUnavailable({ message: "connect ENOENT" }));
+      if (method === "tools/list")
+        return Effect.succeed({
+          tools: ["list_projects", "set_thread_title"].map((name) => ({
+            name,
+            namespace: "codex_app",
+          })),
+        });
+      const call = params as { tool: string };
+      if (call.tool === "list_projects")
+        return Effect.succeed({
+          success: true,
+          contentItems: [
+            {
+              text: JSON.stringify({
+                projects: [
+                  {
+                    projectId: pipe.endsWith(active) || ambiguous ? "first" : "foreign",
+                    projectKind: "local",
+                    path: "/isolated/project",
+                    hostId: "local",
+                  },
+                ],
+              }),
+            },
+          ],
+        });
+      writes.push(pipe);
+      if (lostAcknowledgement)
+        return Effect.fail(new CodexDesktopUnavailable({ message: "Codex desktop disconnected." }));
+      return Effect.succeed({ success: true });
+    });
+    const fs = FileSystem.makeNoop({
+      readFileString: () => Effect.succeed(JSON.stringify(h.desktopState)),
+      readDirectory: () => Effect.succeed([active, "codex-app-tools-other"]),
+    });
+    const run = Effect.gen(function* () {
+      const connection = yield* connect(ProviderInstanceId.make("codex"));
+      yield* connection.desktop.call("set_thread_title", "native-thread", { title: "Renamed" });
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provide(h.services),
+      Effect.provideService(HostProcess.Platform, "win32"),
+      Effect.provideService(HostProcess.Environment, {
+        CODEX_APP_TOOLS_PIPE_PATH: "\\\\.\\pipe\\codex-app-tools-stale",
+      }),
+    );
+    yield* run;
+    active = "codex-app-tools-restarted";
+    yield* run;
+    expect(writes).toEqual([
+      "\\\\.\\pipe\\codex-app-tools-first",
+      "\\\\.\\pipe\\codex-app-tools-restarted",
+    ]);
+    ambiguous = true;
+    expect((yield* Effect.result(run))._tag).toBe("Failure");
+    expect(writes).toHaveLength(2);
+    ambiguous = false;
+    lostAcknowledgement = true;
+    expect((yield* Effect.result(run))._tag).toBe("Failure");
+    expect(writes).toHaveLength(3);
+    h.desktopState["local-projects"].first.rootPaths = ["/different/home"];
+    expect((yield* Effect.result(run))._tag).toBe("Failure");
+    expect(writes).toHaveLength(3);
+  }).pipe(Effect.scoped, Effect.provide(testEnvironment)),
+);
 
 it.effect("does not change a synced chat until Codex acknowledges its rename", () =>
   Effect.gen(function* () {

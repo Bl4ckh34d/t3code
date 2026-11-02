@@ -26,11 +26,8 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as ServerConfig from "../config.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
-import {
-  desktopBridge,
-  requestDesktopPipe,
-  CodexDesktopUnavailable,
-} from "./CodexDesktopBridge.ts";
+import { desktopBridge, CodexDesktopUnavailable } from "./CodexDesktopBridge.ts";
+import { makeDesktopRequest } from "./CodexDesktopConnection.ts";
 
 const NativeProject = Schema.Struct({
   id: Schema.String,
@@ -309,7 +306,7 @@ export const connect = Effect.fn("CodexProjectMembership.connect")(function* (
     ...connection,
     homePath: layout.sharedHomePath,
     desktopConfigured: desktopPipePath.length > 0,
-    desktop: desktopBridge(requestDesktopPipe(desktopPipePath)),
+    desktop: desktopBridge(yield* makeDesktopRequest(desktopPipePath, layout.sharedHomePath)),
   };
 });
 
