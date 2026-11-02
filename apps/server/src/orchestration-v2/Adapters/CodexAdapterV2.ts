@@ -1,6 +1,7 @@
 import { pipe } from "effect/Function";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
+import { resolveCodexThreadProject } from "../../provider/CodexThreadProject.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -6954,14 +6955,30 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             ensureInitialized.pipe(
               Effect.andThen(mcpSessions.read(threadInput.threadId)),
               Effect.flatMap((mcpSession) =>
-                client.request(
-                  "thread/start",
-                  codexThreadRuntimeParams({
-                    mcpSession,
-                    modelSelection: threadInput.modelSelection,
-                    runtimePolicy: threadInput.runtimePolicy,
-                  }),
-                ),
+                Effect.gen(function* () {
+                  const projectId = yield* resolveCodexThreadProject(
+                    client.raw.request,
+                    threadInput.project,
+                  );
+                  const params = {
+                    ...codexThreadRuntimeParams({
+                      mcpSession,
+                      modelSelection: threadInput.modelSelection,
+                      runtimePolicy: threadInput.runtimePolicy,
+                    }),
+                    ...(projectId === undefined ? {} : { projectId }),
+                  };
+                  // The generated stable request schema strips Codex's experimental projectId.
+                  return projectId === undefined
+                    ? yield* client.request("thread/start", params)
+                    : yield* client.raw
+                        .request("thread/start", params)
+                        .pipe(
+                          Effect.flatMap(
+                            Schema.decodeUnknownEffect(CodexSchema.V2ThreadStartResponse),
+                          ),
+                        );
+                }),
               ),
               Effect.map((response): OrchestrationV2ProviderThread =>
                 providerThreadFromCodexThread({

@@ -20,6 +20,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ServerConfig from "../config.ts";
+import { makeDesktopRequest } from "./CodexDesktopConnection.ts";
 import * as ProjectService from "./ProjectService.ts";
 import { CodexDesktopUnavailable, requestDesktopPipe } from "./CodexDesktopBridge.ts";
 import {
@@ -192,7 +193,7 @@ it.effect("recovers a restarted desktop only within the configured Codex home", 
     let lostAcknowledgement = false;
     const writes: string[] = [];
     stubs.pipe.mockImplementation((pipe) => (method, params) => {
-      if (pipe.endsWith("stale"))
+      if (!pipe || pipe.endsWith("stale"))
         return Effect.fail(new CodexDesktopUnavailable({ message: "connect ENOENT" }));
       if (method === "tools/list")
         return Effect.succeed({
@@ -243,6 +244,17 @@ it.effect("recovers a restarted desktop only within the configured Codex home", 
     yield* run;
     active = "codex-app-tools-restarted";
     yield* run;
+    yield* Effect.gen(function* () {
+      const request = yield* makeDesktopRequest(
+        "",
+        (yield* Path.Path).resolve("/isolated/codex-home"),
+      );
+      yield* request("tools/list");
+    }).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provide(h.services),
+      Effect.provideService(HostProcess.Platform, "win32"),
+    );
     expect(writes).toEqual([
       "\\\\.\\pipe\\codex-app-tools-first",
       "\\\\.\\pipe\\codex-app-tools-restarted",

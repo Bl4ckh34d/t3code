@@ -1142,6 +1142,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     onRequest: (method: string, params: unknown) => Effect.Effect<void> = () => Effect.void,
     readChildMetadata?: Parameters<typeof withCodexReplayChildMetadata>[2],
     beforeEmitInbound?: CodexReplay.CodexAppServerReplayDriver["beforeEmitInbound"],
+    project?: ProviderAdapter.ProviderAdapterV2EnsureThreadInput["project"],
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -1176,6 +1177,15 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   (client) =>
                     ({
                       ...client,
+                      raw: {
+                        ...client.raw,
+                        request: (method, params) =>
+                          method === "thread/start"
+                            ? onRequest(method, params).pipe(
+                                Effect.andThen(client.raw.request(method, params)),
+                              )
+                            : client.raw.request(method, params),
+                      },
                       request: (method, params) =>
                         onRequest(method, params).pipe(
                           Effect.andThen(client.request(method, params)),
@@ -1212,6 +1222,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       });
       const providerThread = yield* runtime.ensureThread({
         threadId,
+        ...(project === undefined ? {} : { project }),
         modelSelection: CODEX_TEST_MODEL_SELECTION,
         runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
       });
@@ -1498,17 +1509,77 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             nativeThreadId: "launch-mcp-thread",
             nativeTurnId: "unused",
             prompt: "unused",
-          }).slice(0, 5),
+          })
+            .slice(0, 5)
+            .flatMap((entry, index) => {
+              if (index < 3) return [entry];
+              if (!("frame" in entry) || typeof entry.frame !== "object" || entry.frame === null)
+                return [entry];
+              const frame = { ...entry.frame, id: 3 };
+              const updated =
+                entry.type === "expect_outbound"
+                  ? {
+                      ...entry,
+                      frame: {
+                        ...frame,
+                        params: {
+                          cwd: "/workspace",
+                          model: "gpt-5.4",
+                          config: {
+                            ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+                            "mcp_servers.t3-code": {
+                              url: "http://127.0.0.1:43123/mcp",
+                              tool_timeout_sec: 3900,
+                              http_headers: { Authorization: "Bearer secret-codex-token" },
+                            },
+                          },
+                          projectId: "native-selected-project",
+                        },
+                      },
+                    }
+                  : { ...entry, frame };
+              return index === 3
+                ? [
+                    {
+                      type: "expect_outbound" as const,
+                      label: "project/list",
+                      frame: { id: 2, method: "project/list", params: { limit: 100 } },
+                    },
+                    {
+                      type: "emit_inbound" as const,
+                      label: "project/list",
+                      frame: {
+                        id: 2,
+                        result: {
+                          data: [
+                            {
+                              id: "native-selected-project",
+                              roots: [{ path: "/workspace" }],
+                              metadata: {},
+                            },
+                          ],
+                          nextCursor: null,
+                        },
+                      },
+                    },
+                    updated,
+                  ]
+                : [updated];
+            }),
         }),
         () => Effect.void,
         (method, params) =>
           Effect.sync(() => {
             if (method === "thread/start") requests.push(params);
           }),
+        undefined,
+        undefined,
+        { id: "selected-project", title: "Selected", workspaceRoot: "/workspace" },
       );
       assert.deepEqual(requests, [
         {
           cwd: "/workspace",
+          projectId: "native-selected-project",
           model: "gpt-5.4",
           config: {
             "tools.update_plan.enabled": true,

@@ -128,8 +128,7 @@ export const makeDesktopRequest = Effect.fn("CodexDesktopConnection.makeRequest"
       Effect.catch((error) =>
         Effect.gen(function* () {
           // Only rediscover during the read-only handshake; a lost write acknowledgement must never replay a mutation.
-          if (method !== "tools/list" || platform !== "win32" || !configuredPath)
-            return yield* error;
+          if (method !== "tools/list" || platform !== "win32") return yield* error;
           currentPath = yield* discover().pipe(Effect.provideService(Crypto.Crypto, crypto));
           return yield* requestDesktopPipe(currentPath)(method, params);
         }),

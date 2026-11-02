@@ -430,6 +430,11 @@ export interface ProviderAdapterV2OpenSessionInput {
 
 export interface ProviderAdapterV2EnsureThreadInput {
   readonly threadId: ThreadId;
+  readonly project?: {
+    readonly id: string;
+    readonly title: string;
+    readonly workspaceRoot: string;
+  };
   readonly title?: string;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;

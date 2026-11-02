@@ -700,6 +700,12 @@ export const layer: Layer.Layer<
         modelSelection: run.modelSelection,
       });
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
+      const selectedProjectId =
+        projection.thread.organizationProjectId ?? projection.thread.projectId;
+      const selectedProject =
+        selectedProjectId === "codex-unassigned-history"
+          ? undefined
+          : yield* projects.getById(selectedProjectId).pipe(Effect.map(Option.getOrUndefined));
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );
@@ -1163,6 +1169,7 @@ export const layer: Layer.Layer<
           });
           const loaded = yield* loadFromProvider(
             session.ensureThread({
+              ...(selectedProject === undefined ? {} : { project: selectedProject }),
               threadId: projection.thread.id,
               title: projection.thread.title,
               modelSelection: run.modelSelection,
@@ -1209,6 +1216,7 @@ export const layer: Layer.Layer<
           // Pass the stored provider row for adoption; adapter-minted duplicates make activeProviderThreadId flap.
           return yield* loadFromProvider(
             session.ensureThread({
+              ...(selectedProject === undefined ? {} : { project: selectedProject }),
               threadId: projection.thread.id,
               title: projection.thread.title,
               modelSelection: run.modelSelection,
@@ -1311,6 +1319,7 @@ export const layer: Layer.Layer<
         });
         const replacement = yield* loadFromProvider(
           session.ensureThread({
+            ...(selectedProject === undefined ? {} : { project: selectedProject }),
             threadId: projection.thread.id,
             title: projection.thread.title,
             modelSelection: run.modelSelection,
