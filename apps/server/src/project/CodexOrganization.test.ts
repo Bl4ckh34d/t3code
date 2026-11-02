@@ -477,6 +477,7 @@ it.effect(
                 "list_projects",
                 "list_threads",
                 "move_thread_to_project",
+                "navigate_to_codex_page",
                 "reorder_sidebar_projects",
                 "update_sidebar_preferences",
               ].map((name) => ({ name, namespace: "codex_app" })),
@@ -571,6 +572,46 @@ it.effect(
         ),
       ).toBe(false);
       desktopApproved = true;
+      const moveCalls = () =>
+        stubs.desktop.mock.calls.filter(
+          ([, params]) =>
+            (params as { tool?: string } | undefined)?.tool === "move_thread_to_project",
+        ).length;
+      const callsBeforeCheck = moveCalls();
+      const unchecked = yield* organizeCodex({
+        action: "check-move",
+        threadId,
+        projectId: secondProjectId,
+      }).pipe(Effect.result, Effect.provide(h.services));
+      expect(unchecked._tag).toBe("Failure");
+      expect(moveCalls()).toBe(callsBeforeCheck);
+      yield* organizeCodex({
+        action: "open-move-in-codex",
+        threadId,
+        projectId: secondProjectId,
+      }).pipe(Effect.provide(h.services));
+      expect(moveCalls()).toBe(callsBeforeCheck);
+      expect(stubs.desktop).toHaveBeenLastCalledWith(
+        "tools/call",
+        expect.objectContaining({
+          tool: "navigate_to_codex_page",
+          arguments: { threadId: "native-thread" },
+        }),
+      );
+      currentProject = "native-second-project";
+      h.desktopState["thread-project-assignments"]["native-thread"]!.projectId = "second";
+      const checked = yield* organizeCodex({
+        action: "check-move",
+        threadId,
+        projectId: secondProjectId,
+      }).pipe(Effect.provide(h.services));
+      expect(checked).not.toHaveProperty("moveConfirmation");
+      expect(moveCalls()).toBe(callsBeforeCheck);
+      expect(h.writes).toContainEqual(
+        expect.objectContaining({ threadId, organizationProjectId: secondProjectId }),
+      );
+      currentProject = "native-project";
+      h.desktopState["thread-project-assignments"]["native-thread"]!.projectId = "first";
       for (const id of ["native-project", "native-second-project"])
         roots.set(id, [{ path: "/isolated/project" }, { path: "/isolated/second-project" }]);
       h.desktopState["local-projects"].first.rootPaths = roots

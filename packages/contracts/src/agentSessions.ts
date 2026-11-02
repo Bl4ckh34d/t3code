@@ -160,6 +160,18 @@ export const AgentSessionOrganizeInput = Schema.Union([
     confirmedSourcePaths: Schema.optionalKey(Schema.Array(TrimmedNonEmptyString)),
   }),
   Schema.Struct({
+    action: Schema.Literal("check-move"),
+    threadId: ThreadId,
+    projectId: ProjectId,
+    beforeThreadId: Schema.optionalKey(ThreadId),
+  }),
+  Schema.Struct({
+    action: Schema.Literal("open-move-in-codex"),
+    threadId: ThreadId,
+    projectId: ProjectId,
+    beforeThreadId: Schema.optionalKey(ThreadId),
+  }),
+  Schema.Struct({
     action: Schema.Literal("rename-project"),
     projectId: ProjectId,
     title: TrimmedNonEmptyString,

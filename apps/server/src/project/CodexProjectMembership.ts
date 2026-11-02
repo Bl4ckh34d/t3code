@@ -620,6 +620,7 @@ export const moveCodexMembership = Effect.fn("moveCodexMembership")(function* (
   threadId: ThreadId,
   projectId: ProjectId,
   beforeThreadId?: ThreadId,
+  approvalAction?: "check" | "open-in-codex",
 ) {
   const crypto = yield* Crypto.Crypto;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -650,7 +651,7 @@ export const moveCodexMembership = Effect.fn("moveCodexMembership")(function* (
     if (!nativeId)
       return yield* new MembershipError({ message: "The Codex chat has no native identifier." });
     const { client, desktop, homePath } = yield* connect(providerThread.providerInstanceId);
-    yield* desktop.requireTool("move_thread_to_project");
+    if (approvalAction === undefined) yield* desktop.requireTool("move_thread_to_project");
     const nativeProjects = yield* readCodexProjects(client.raw);
     const native =
       nativeProjects.find((entry) => entry.metadata?.["t3code.projectId"] === projectId) ??
@@ -679,6 +680,27 @@ export const moveCodexMembership = Effect.fn("moveCodexMembership")(function* (
       ),
     );
     const sameProject = position.thread.projectId === native.id;
+    if (approvalAction === "open-in-codex") {
+      yield* desktop.call("navigate_to_codex_page", nativeId, { threadId: nativeId });
+      return sidebarOrder;
+    }
+    if (approvalAction === "check") {
+      const desktopState = yield* readCodexDesktopState(homePath);
+      if (
+        !sameProject ||
+        codexDesktopSidebar(desktopState, homePath).threadProjectIds.get(nativeId) !== native.id
+      )
+        return yield* new MembershipError({
+          message:
+            "Codex has not moved this chat to the destination project yet. Move it in the Codex sidebar and approve the requested folders there, then check again. No move was retried.",
+        });
+      return yield* pullCodexMembership(
+        providerThread.providerInstanceId,
+        client.raw,
+        desktopState,
+        homePath,
+      );
+    }
     let beforeNativeId: string | undefined;
     if (beforeThreadId) {
       const before = yield* orchestrator.getThreadRecords(beforeThreadId, ["providerThreads"]);
@@ -825,8 +847,21 @@ export const organizeCodex = Effect.fn("organizeCodex")(function* (
 ) {
   if (input.action === "rename-project")
     return yield* new CodexDesktopUnavailable({ message: CODEX_PROJECT_RENAME_DISABLED_MESSAGE });
-  if (input.action === "move-thread")
-    return yield* moveCodexMembership(input.threadId, input.projectId, input.beforeThreadId);
+  if (
+    input.action === "move-thread" ||
+    input.action === "check-move" ||
+    input.action === "open-move-in-codex"
+  )
+    return yield* moveCodexMembership(
+      input.threadId,
+      input.projectId,
+      input.beforeThreadId,
+      input.action === "check-move"
+        ? "check"
+        : input.action === "open-move-in-codex"
+          ? "open-in-codex"
+          : undefined,
+    );
   const settings = yield* (yield* ServerSettings.ServerSettingsService).getSettings;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const projects = yield* ProjectService.ProjectService;

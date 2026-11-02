@@ -1110,6 +1110,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     input: { projectId: ProjectId; beforeThreadId?: ThreadId };
     projectTitle: string;
     sourcePaths: readonly string[];
+    error?: string;
   } | null>(null);
   const [confirmingMove, setConfirmingMove] = useState(false);
   const moveProjectThread = (
@@ -1118,10 +1119,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       projectId: ProjectId;
       beforeThreadId?: ThreadId;
     },
+    action: "move-thread" | "check-move" = "move-thread",
   ) =>
     organizeCodex({
       environmentId: source.environmentId,
-      input: { action: "move-thread", threadId: source.threadId, ...input },
+      input: { action, threadId: source.threadId, ...input },
     }).then((result) => {
       if (result._tag === "Success") {
         if (result.value.moveConfirmation) {
@@ -1142,6 +1144,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           setCodexOrders((orders) => ({ ...orders, [source.environmentId]: result.value }));
       } else if (!isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
+        if (action === "check-move") {
+          setMoveConfirmation((pending) =>
+            pending ? { ...pending, error: codexOrganizationFailureMessage(error) } : pending,
+          );
+          return;
+        }
         toastManager.add(
           stackedThreadToast({
             type: "error",
@@ -4361,14 +4369,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       >
         <DialogPopup showCloseButton={!confirmingMove}>
           <DialogHeader>
-            <DialogTitle>Approve folders in Codex for {moveConfirmation?.projectTitle}</DialogTitle>
+            <DialogTitle>Move in Codex to approve folder access</DialogTitle>
             <DialogDescription>
-              Codex requires its own folder-access approval. Move this chat in the Codex desktop
-              sidebar and approve these folders there, then retry or sync history in T3. T3 has not
-              granted access or moved the chat.
+              Open the chat in Codex, drag it to {moveConfirmation?.projectTitle} in the Codex
+              sidebar, and approve the folders there. Then return here and refresh the assignment.
+              Refreshing only checks the result; it does not grant access or retry the move.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel>
+            {moveConfirmation?.error ? (
+              <p role="alert" className="mb-3 text-sm text-error">
+                {moveConfirmation.error}
+              </p>
+            ) : null}
             <ul>
               {moveConfirmation?.sourcePaths.map((path) => (
                 <li key={path} className="break-all font-mono text-sm">
@@ -4387,16 +4400,53 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             </Button>
             <Button
               disabled={confirmingMove}
+              variant="outline"
               onClick={() => {
                 if (!moveConfirmation) return;
                 const pending = moveConfirmation;
                 setConfirmingMove(true);
-                void moveProjectThread(pending.source, {
-                  ...pending.input,
-                }).finally(() => setConfirmingMove(false));
+                void organizeCodex({
+                  environmentId: pending.source.environmentId,
+                  input: {
+                    action: "open-move-in-codex",
+                    threadId: pending.source.threadId,
+                    ...pending.input,
+                  },
+                })
+                  .then((result) => {
+                    if (result._tag !== "Success" && !isAtomCommandInterrupted(result))
+                      setMoveConfirmation((current) =>
+                        current
+                          ? {
+                              ...current,
+                              error: codexOrganizationFailureMessage(
+                                squashAtomCommandFailure(result),
+                              ),
+                            }
+                          : current,
+                      );
+                  })
+                  .finally(() => setConfirmingMove(false));
               }}
             >
-              {confirmingMove ? "Checking Codex…" : "Check Codex approval and move"}
+              Open chat in Codex
+            </Button>
+            <Button
+              disabled={confirmingMove}
+              onClick={() => {
+                if (!moveConfirmation) return;
+                const pending = moveConfirmation;
+                setConfirmingMove(true);
+                void moveProjectThread(
+                  pending.source,
+                  {
+                    ...pending.input,
+                  },
+                  "check-move",
+                ).finally(() => setConfirmingMove(false));
+              }}
+            >
+              {confirmingMove ? "Checking Codex…" : "Refresh assignment"}
             </Button>
           </DialogFooter>
         </DialogPopup>
