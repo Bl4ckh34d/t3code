@@ -292,6 +292,7 @@ import {
   sidebarFolderRowId,
 } from "./sidebar/SidebarProjectFolderHeader";
 import { SidebarEnvironmentHeader } from "./sidebar/SidebarEnvironmentHeader";
+import { useSidebarEnvironmentOrder } from "./sidebar/useSidebarEnvironmentOrder";
 import { SidebarProviderHeader, sidebarProviderRowId } from "./sidebar/SidebarProviderHeader";
 import {
   SidebarDragBoundary,
@@ -1083,6 +1084,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     readonly string[],
     readonly string[]
   >("t3.sidebar.project-folder-order.v1", [], projectFolderOrderSchema);
+  const environmentOrder = useSidebarEnvironmentOrder([...environmentLabelById.keys()]);
   const [codexOrders, setCodexOrders] = useCodexSidebarOrders();
   const [dragProjectFolder, setDragProjectFolder] = useState<SidebarProjectSnapshot | null>(null);
   const dragProjectFolderRef = useRef<SidebarProjectSnapshot | null>(null);
@@ -1669,7 +1671,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         )
       : null,
     keepEmptyFolders: (group) => scopedProjectGroups.length > 0 || !group.archived,
-    environmentIds: [...environmentLabelById.keys()],
+    environmentIds: environmentOrder.ids,
     providerEntriesByEnvironment,
   });
   const providerFolderGroups = projectFolders?.map((folder) => folder.group) ?? projectGroups;
@@ -2098,7 +2100,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const projectPointerDragEnabled = isElectron && isWindowsPlatform(navigator.platform);
   const startProjectPointerDrag = (event: React.PointerEvent<HTMLUListElement>) => {
     if (
-      !projectPointerDragEnabled ||
       environmentFolders === null ||
       !event.isPrimary ||
       event.button !== 0 ||
@@ -2112,23 +2113,38 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     if (control && control !== row) return;
     const rowId = row.dataset.sidebarRow;
     if (!rowId) return;
+    const sourceEnvironment = environmentFolders.find(
+      (entry) => `environment:${entry.environmentId}` === rowId,
+    );
+    if (!sourceEnvironment && !projectPointerDragEnabled) return;
     const group = providerFolderGroups.find((entry) => sidebarFolderRowId(entry) === rowId);
     if (group?.id === "codex-unassigned-history") return;
     const thread = threadByKey.get(rowId);
-    const source = group
-      ? { kind: "project" as const, group, environmentId: group.environmentId }
-      : thread && row.dataset.sidebarParent?.startsWith("folder:")
-        ? {
-            kind: "thread" as const,
-            ref: scopeThreadRef(thread.environmentId, thread.id),
-            environmentId: thread.environmentId,
-          }
-        : null;
-    if (!source || !readEnvironmentScope(source.environmentId, AuthOrchestrationOperateScope))
+    const source = sourceEnvironment
+      ? { kind: "environment" as const, environmentId: sourceEnvironment.environmentId }
+      : group
+        ? { kind: "project" as const, group, environmentId: group.environmentId }
+        : thread && row.dataset.sidebarParent?.startsWith("folder:")
+          ? {
+              kind: "thread" as const,
+              ref: scopeThreadRef(thread.environmentId, thread.id),
+              environmentId: thread.environmentId,
+            }
+          : null;
+    if (
+      !source ||
+      (source.kind !== "environment" &&
+        !readEnvironmentScope(source.environmentId, AuthOrchestrationOperateScope))
+    )
       return;
     const tree = event.currentTarget;
     const feedback = createSidebarPointerFeedback(tree, row);
-    const title = source.kind === "project" ? source.group.displayName : thread!.title;
+    const title =
+      source.kind === "environment"
+        ? (environmentLabelById.get(source.environmentId) ?? source.environmentId)
+        : source.kind === "project"
+          ? source.group.displayName
+          : thread!.title;
     dragSensorRef.current?.cancel();
     dragSensorRef.current = new SidebarPointerSensor({
       active: rowId,
@@ -2147,6 +2163,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         },
         onMove: (point) => {
           const target = sidebarPointerDropTarget(tree, point);
+          if (source.kind === "environment") {
+            feedback.update(
+              target &&
+                target.rowId !== rowId &&
+                environmentFolders.some(
+                  (entry) => `environment:${entry.environmentId}` === target.rowId,
+                )
+                ? target
+                : null,
+            );
+            moveThreadContextDragGhost(point, { title, count: 1 });
+            return true;
+          }
           const targetGroup =
             target &&
             providerFolderGroups.find((entry) => sidebarFolderRowId(entry) === target.rowId);
@@ -2182,6 +2211,18 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         onDrop: (point) => {
           const target = sidebarPointerDropTarget(tree, point);
           if (!target) return false;
+          if (source.kind === "environment") {
+            const destination = environmentFolders.find(
+              (entry) => `environment:${entry.environmentId}` === target.rowId,
+            );
+            if (!destination || destination.environmentId === source.environmentId) return false;
+            environmentOrder.move(
+              source.environmentId,
+              destination.environmentId,
+              target.placement,
+            );
+            return true;
+          }
           const targetGroup = providerFolderGroups.find(
             (entry) => sidebarFolderRowId(entry) === target.rowId,
           );
@@ -2205,7 +2246,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         if (source.kind === "project") {
           dragProjectFolderRef.current = source.group;
           setDragProjectFolder(source.group);
-        } else {
+        } else if (source.kind === "thread") {
           projectDragThreadRef.current = source.ref;
           setProjectDragThread(source.ref);
         }

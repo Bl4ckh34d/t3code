@@ -795,6 +795,18 @@ export function shouldCreateNewThreadInCurrentProject(
   return shiftKey || openProjectGroupCount === 1 || projectGroupCount === 0;
 }
 
+export function reorderSidebarEnvironments<T extends string>(
+  ids: readonly T[],
+  source: T,
+  target: T,
+  placement: "before" | "after",
+): readonly T[] {
+  if (source === target || !ids.includes(source) || !ids.includes(target)) return ids;
+  const next = ids.filter((id) => id !== source);
+  next.splice(next.indexOf(target) + (placement === "after" ? 1 : 0), 0, source);
+  return next;
+}
+
 export function orderItemsByPreferredIds<TItem, TId>(input: {
   items: readonly TItem[];
   preferredIds: readonly TId[];

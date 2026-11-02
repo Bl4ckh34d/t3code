@@ -13,6 +13,7 @@ import {
   hasUnseenCompletion,
   resolveSidebarRowThreadId,
   orderItemsByPreferredIds,
+  reorderSidebarEnvironments,
   pinOrderKeyBetween,
   resolveProjectStatusIndicator,
   resolveSidebarSweepKeys,
@@ -245,6 +246,24 @@ function makeLatestRun(overrides?: {
 }
 
 describe("orderItemsByPreferredIds", () => {
+  it("moves devices in both directions without dropping offline or newly added devices", () => {
+    const ids = ["local", "offline", "remote", "new"];
+    expect(reorderSidebarEnvironments(ids, "remote", "local", "before")).toEqual([
+      "remote",
+      "local",
+      "offline",
+      "new",
+    ]);
+    expect(reorderSidebarEnvironments(ids, "local", "remote", "after")).toEqual([
+      "offline",
+      "remote",
+      "local",
+      "new",
+    ]);
+    expect(reorderSidebarEnvironments(ids, "missing", "remote", "after")).toEqual(ids);
+    expect(reorderSidebarEnvironments(ids, "local", "missing", "before")).toEqual(ids);
+    expect(reorderSidebarEnvironments(ids, "local", "local", "after")).toEqual(ids);
+  });
   it("resolves legacy preference aliases without materializing project state", () => {
     const ordered = orderItemsByPreferredIds({
       items: [

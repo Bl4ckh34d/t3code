@@ -7,8 +7,40 @@ import { makeThreadFixture } from "../test-fixtures";
 import { useClientSettings } from "../hooks/useSettings";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
 import { useSidebarThreads } from "./Sidebar";
+import { useSidebarEnvironmentOrder } from "./sidebar/useSidebarEnvironmentOrder";
 
 vi.mock("../hooks/useSettings", { spy: true });
+
+it("retains device order across remount and includes newly connected machines", async () => {
+  const ids = [EnvironmentId.make("sort-local"), EnvironmentId.make("sort-remote")];
+  const key = "t3.sidebar.environment-order.v1";
+  const previous = localStorage.getItem(key);
+  using cleanup = new DisposableStack();
+  cleanup.defer(() => {
+    if (previous === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, previous);
+  });
+  localStorage.removeItem(key);
+  function Devices({ added = false }: { added?: boolean }) {
+    const order = useSidebarEnvironmentOrder(
+      added ? [...ids, EnvironmentId.make("sort-new")] : ids,
+    );
+    return (
+      <>
+        <output>{order.ids.join(",")}</output>
+        <button onClick={() => order.move(ids[1]!, ids[0]!, "before")}>Move device</button>
+      </>
+    );
+  }
+  await using screen = await render(<Devices />);
+  await screen.getByRole("button", { name: "Move device" }).click();
+  await expect.element(screen.getByRole("status")).toHaveTextContent("sort-remote,sort-local");
+  expect(JSON.parse(localStorage.getItem(key)!)).toEqual(["sort-remote", "sort-local"]);
+  await screen.rerender(<Devices key="remounted" added />);
+  await expect
+    .element(screen.getByRole("status"))
+    .toHaveTextContent("sort-remote,sort-local,sort-new");
+});
 vi.mock("../state/olderSettledShelf", () => ({
   useOlderSettledShelf: () => ({
     isListed: () => true,

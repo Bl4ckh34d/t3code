@@ -38,7 +38,7 @@ export const SidebarEnvironmentHeader = memo(function SidebarEnvironmentHeader(p
               aria-expanded={!props.collapsed}
               aria-label={`${props.label}, ${status}`}
               onClick={() => props.onToggle(props.environmentId)}
-              className="flex h-9 w-full cursor-pointer items-center gap-2 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left text-sm font-semibold text-sidebar-foreground outline-none hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+              className="flex h-9 w-full cursor-grab touch-none select-none items-center gap-2 rounded-(--control-radius) px-(--sidebar-row-content-inset) text-left text-sm font-semibold text-sidebar-foreground outline-none hover:bg-sidebar-row-hover active:cursor-grabbing focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
             />
           }
         >
